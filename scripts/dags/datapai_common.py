@@ -9,8 +9,9 @@ from __future__ import annotations
 from datetime import timedelta
 from airflow.operators.bash import BashOperator
 
-SCRIPTS_DIR = "/opt/datapai/scripts"
-PROJECT_DIR = "/opt/datapai"
+SCRIPTS_DIR = "/opt/datapai-stock/scripts"
+PROJECT_DIR = "/opt/datapai-stock"
+PLATFORM_DIR = "/opt/datapai"
 
 DEFAULT_ARGS = {
     "owner": "datapai",
@@ -37,7 +38,7 @@ export YF_CACHE_DIR="/tmp/yfinance_cache/$${_DAG_ID}/$${_TASK_ID}"
 export HOME="/tmp/datapai_home/$${_DAG_ID}"
 
 mkdir -p "$DATAPAI_LOG_DIR" "$YF_CACHE_DIR" "$HOME/.cache" 2>/dev/null || true
-mkdir -p /opt/datapai/scripts/logs 2>/dev/null || true
+mkdir -p /opt/datapai-stock/scripts/logs 2>/dev/null || true
 
 # Source credentials (env vars, API keys)
 set +u
@@ -46,7 +47,11 @@ set +u
 [[ -f /opt/datapai/.env ]] && set -a && source /opt/datapai/.env && set +a || true
 set -u
 
-cd /opt/datapai
+# Platform framework on PYTHONPATH so stock scripts can import agents.llm_client etc.
+export DATAPAI_PLATFORM_DIR="/opt/datapai"
+export PYTHONPATH="/opt/datapai-stock:/opt/datapai:$${PYTHONPATH:-}"
+
+cd /opt/datapai-stock
 """
 
 

@@ -1,38 +1,24 @@
-import platform_init  # noqa: F401 — must be first to link datapai-streamlit framework
-
 """
 TinyFish Financial Signal API
 ==============================
 FastAPI service exposing the TinyFish financial signal pipeline.
 
-Called by datapai-tinyfish (Next.js) on port 8000.
+Called by datapai-tinyfish (Next.js) on port 8005.
 All responses follow shared-api-contract.md envelope format.
 
 Run locally:
-  uvicorn agents.tinyfish_api:app --host 0.0.0.0 --port 8000 --reload
-
-Endpoints (per shared-api-contract.md + v1.5 additions):
-  GET  /agent/health
-  POST /agent/detect-financial-signal
-  POST /agent/cross-validate-signal
-  POST /agent/generate-signal-summary
-  POST /agent/run-financial-signal-pipeline
-  POST /agent/classify-change-type          (v1.5 — Signal Quality Filter)
-  POST /agent/investigate-signal            (v1.5 — Investigation Agent)
-
-Fundamental Analysis endpoints:
-  POST /agent/run-fundamental-pipeline      — full 10-step fundamental pipeline
-  GET  /agent/fundamental-snapshot          — read latest snapshot from DB
-  GET  /agent/fundamental-screener          — filtered screener
-  POST /agent/fundamental-compare           — side-by-side comparison of 2–5 tickers
+  uvicorn app:app --host 0.0.0.0 --port 8005 --reload
 
 Environment variables:
-  TINYFISH_API_KEY         Bearer token (empty = no auth)
-  LLM_MODE                 paid | local | hybrid   (drives RouterChatClient)
-  LLM_PRIMARY_PROVIDER     openai | bedrock | ollama
+  DATAPAI_PLATFORM_DIR    path to datapai-streamlit (platform framework)
+  TINYFISH_API_KEY        Bearer token (empty = no auth)
+  LLM_MODE                paid | local | hybrid   (drives RouterChatClient)
+  LLM_PRIMARY_PROVIDER    openai | bedrock | ollama
 """
 
 from __future__ import annotations
+
+import platform_init  # noqa: F401 — links datapai-streamlit framework via sys.path
 
 import logging
 import os
