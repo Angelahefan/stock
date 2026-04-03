@@ -1,0 +1,10 @@
+# datapai-stock-be — Stock domain dependencies
+# Platform deps (datapai-streamlit) must be installed first:
+#   pip install -r ../datapai-streamlit/requirements.txt
+
+# Stock data providers
+yfinance
+feedparser
+
+# Already in platform but listed for clarity
+# fastapi, uvicorn, psycopg2-binary, pandas, requests — from platform
