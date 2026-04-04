@@ -2,15 +2,15 @@
 Platform framework linkage for datapai-stock-be.
 ─────────────────────────────────────────────────
 Import this module at the TOP of app.py (before any agents.* imports) to
-make the common datapai-streamlit framework available via sys.path.
+make the common datapai-platform-be framework available via sys.path.
 
 Resolution order:
   1. Local agents/ (stock-specific: technical_analysis, fundamental, etc.)
   2. Platform agents/ via sys.path (generic: llm_client, agent_base, etc.)
 
 Environment:
-  DATAPAI_PLATFORM_DIR  — path to datapai-streamlit repo
-    Local dev default:   ../datapai-streamlit  (sibling directory)
+  DATAPAI_PLATFORM_DIR  — path to datapai-platform-be repo
+    Local dev default:   ../datapai-platform-be  (sibling directory)
     EC2 default:         /home/ec2-user/git/vanna-streamlit
     Airflow container:   /opt/datapai
 """
@@ -19,7 +19,7 @@ import sys
 
 _PLATFORM_DIR = os.environ.get(
     "DATAPAI_PLATFORM_DIR",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "datapai-streamlit"),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "datapai-platform-be"),
 )
 
 # Resolve to absolute path

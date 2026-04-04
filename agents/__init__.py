@@ -8,7 +8,7 @@ import os as _os
 
 _platform_dir = _os.environ.get(
     "DATAPAI_PLATFORM_DIR",
-    _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "..", "datapai-streamlit"),
+    _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "..", "datapai-platform-be"),
 )
 _platform_agents = _os.path.join(_os.path.abspath(_platform_dir), "agents")
 
