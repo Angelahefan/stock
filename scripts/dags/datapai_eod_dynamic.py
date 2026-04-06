@@ -27,7 +27,7 @@ def _load_markets():
     try:
         import psycopg2
         conn = psycopg2.connect(
-            host="localhost", port=5432, dbname="postgres", user="postgres", password="postgres",
+            host="localhost", port=int(os.getenv("DATAPAI_PG_PORT", "5434")), dbname="postgres", user="postgres", password=os.getenv("PGPASSWORD", "postgres"),
             options="-c search_path=datapai,public", connect_timeout=5,
         )
         cur = conn.cursor()
