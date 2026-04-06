@@ -51,11 +51,6 @@ set -u
 export DATAPAI_PLATFORM_DIR="/opt/datapai"
 export PYTHONPATH="/opt/datapai-stock:/opt/datapai:$${PYTHONPATH:-}"
 
-# Phase 3 DB separation: stock DAGs connect to datapai_stock_db (port 5434)
-# .env.dev no longer has DATAPAI_PG_PORT (moved to per-service systemd overrides)
-export DATAPAI_PG_PORT=5434
-export PGPORT=5434
-
 cd /opt/datapai-stock
 """
 
