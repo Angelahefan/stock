@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+"""
+scripts/sync_snowflake_iceberg.py
+─────────────────────────────────────────────────────────────────────────────
+Snowflake Managed Iceberg setup + data loading.
+
+Pipeline:
+    S3 raw Parquet  ──COPY──►  Snowflake Managed Iceberg  ──writes──►  S3 bronze
+    (written by Python)         (Snowflake catalog)                (Iceberg format)
+
+Bronze location: s3://$S3_BUCKET_STOCK/stock/bronze/
+  ├── prices/         ← Iceberg table (Snowflake managed, created by dbt)
+  └── ohlcv_intraday/ ← Iceberg table (Snowflake managed, created by dbt)
+
+Pipeline:
+    S3 raw Parquet  ──COPY──►  Snowflake Managed Iceberg  ──writes──►  S3 bronze
+    (written by Python)         (Snowflake catalog)                (Iceberg format)
+
+Setup (one-time — preferred via dbt):
+    # Infrastructure (schema, storage integration, external volume, stage):
+    cd /path/to/dbt-demo
+    export SNOWFLAKE_ROLE=ACCOUNTADMIN
+    dbt run-operation create_stock_infra
+
+    # Create Iceberg tables via dbt (schema-as-code):
+    dbt run --select stock.*
+
+    # Or use Python fallback (--mode setup):
+    python3 scripts/sync_snowflake_iceberg.py --mode setup
+
+Full load (run after sync_postgres_to_s3_oneoff.py):
+    python3 scripts/sync_snowflake_iceberg.py --mode full
+
+Daily delta (run after sync_postgres_to_s3_daily.py):
+    python3 scripts/sync_snowflake_iceberg.py --mode delta --days 3
+
+Pre-requisites:
+    pip install snowflake-connector-python pyarrow boto3
+    pip install dbt-snowflake            # for dbt-based setup
+
+Env vars:
+    # Snowflake (existing in .bash_profile)
+    SNOWFLAKE_ACCOUNT      e.g. AORKUCF-CV45422.ap-southeast-2.aws
+    SNOWFLAKE_USER         e.g. AIRBYTE_USER
+    SNOWFLAKE_PASSWORD
+    SNOWFLAKE_WAREHOUSE    default: DATAPAI_WAREHOUSE
+    SNOWFLAKE_DATABASE     default: DATAPAI
+    SNOWFLAKE_ROLE         default: AIRBYTE_ROLE  (use ACCOUNTADMIN for setup)
+    SNOWFLAKE_S3_ROLE_ARN  IAM role ARN Snowflake uses to access S3
+                           (required for --mode setup / dbt run-operation create_stock_infra)
+
+    # AWS (EC2 uses IAM instance role — no keys needed)
+    AWS_DEFAULT_REGION     default: ap-southeast-2
+
+    # S3
+    S3_BUCKET_STOCK        default: codepais3
+
+IMPORTANT — External Volume / IAM setup (one-time manual step):
+    Snowflake Managed Iceberg requires an IAM role with s3:GetObject /
+    s3:PutObject / s3:DeleteObject on the bronze bucket path.
+    See: https://docs.snowflake.com/en/user-guide/tables-iceberg-configure-external-volume-s3
+    After creating the external volume, Snowflake provides an IAM policy
+    document you must attach to the role (SNOWFLAKE_S3_ROLE_ARN).
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+import traceback
+from datetime import date, timedelta
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from scripts.lib.log_setup import setup_logging
+from scripts.lib.s3_helpers import list_raw_partitions
+from scripts.lib.snowflake_helpers import (
+    execute,
+    get_iceberg_row_counts,
+    get_sf_conn,
+    load_intraday_from_stage,
+    load_prices_from_stage,
+    setup_snowflake,
+)
+
+logger = setup_logging("sync_snowflake_iceberg")
+
+
+def _affected_months(days: int) -> list[tuple[int, int]]:
+    today = date.today()
+    start = today - timedelta(days=days)
+    months = set()
+    cur = start
+    while cur <= today:
+        months.add((cur.year, cur.month))
+        cur = (cur.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return sorted(months)
+
+
+# ── Modes ──────────────────────────────────────────────────────────────────
+
+def mode_setup(conn) -> None:
+    """Create schema, storage integration, external volume, stage, and Iceberg tables."""
+    setup_snowflake(conn)
+
+
+def mode_full(conn, exchanges: list[str], dry_run: bool) -> None:
+    """
+    Full load: iterate all existing S3 raw partitions and load into Iceberg.
+    Idempotent — deletes + reloads each partition.
+    """
+    logger.info("=== Full Snowflake Iceberg load  exchanges=%s ===", exchanges)
+    total_prices = 0
+    total_intraday = 0
+
+    for table, loader in [
+        ("prices",        load_prices_from_stage),
+        ("ohlcv_intraday", load_intraday_from_stage),
+    ]:
+        partitions = list_raw_partitions(table)
+        for p in partitions:
+            if p["exchange"].upper() not in [e.upper() for e in exchanges]:
+                continue
+            if dry_run:
+                logger.info("[DRY RUN] Would load %s  %s  %d-%02d",
+                            table, p["exchange"], p["year"], p["month"])
+                continue
+            n = loader(conn, p["exchange"], p["year"], p["month"])
+            if table == "prices":
+                total_prices += n
+            else:
+                total_intraday += n
+
+    if not dry_run:
+        counts = get_iceberg_row_counts(conn)
+        logger.info("Snowflake Iceberg totals → prices=%d  intraday=%d",
+                    counts["prices"], counts["ohlcv_intraday"])
+    logger.info("=== Full load complete ===")
+
+
+def mode_delta(conn, exchanges: list[str], days: int, dry_run: bool) -> None:
+    """
+    Delta load: reload only the S3 partitions touched by the last N days.
+    """
+    logger.info("=== Delta Snowflake Iceberg load  days=%d  exchanges=%s ===",
+                days, exchanges)
+    months = _affected_months(days)
+    total = 0
+
+    for exchange in exchanges:
+        for year, month in months:
+            for table, loader in [
+                ("prices",        load_prices_from_stage),
+                ("ohlcv_intraday", load_intraday_from_stage),
+            ]:
+                if dry_run:
+                    logger.info("[DRY RUN] Would reload %s  %s  %d-%02d",
+                                table, exchange, year, month)
+                    continue
+                n = loader(conn, exchange, year, month)
+                total += n
+
+    if not dry_run:
+        counts = get_iceberg_row_counts(conn)
+        logger.info("After delta → prices=%d  intraday=%d",
+                    counts["prices"], counts["ohlcv_intraday"])
+    logger.info("=== Delta load complete  %d rows refreshed ===", total)
+
+
+def mode_status(conn) -> None:
+    """Print current Snowflake Iceberg row counts."""
+    counts = get_iceberg_row_counts(conn)
+    logger.info("Snowflake Iceberg status:")
+    logger.info("  STOCK.PRICES          : %d rows", counts["prices"])
+    logger.info("  STOCK.OHLCV_INTRADAY  : %d rows", counts["ohlcv_intraday"])
+
+    # Show per-exchange breakdown
+    from scripts.lib.snowflake_helpers import SF_DATABASE, SF_ICEBERG_SCHEMA as schema
+    db = SF_DATABASE
+    rows = execute(conn, f"""
+        SELECT exchange,
+               COUNT(*) AS rows,
+               COUNT(DISTINCT ticker) AS tickers,
+               MIN(trade_date) AS earliest,
+               MAX(trade_date) AS latest
+        FROM {db}.{schema}.PRICES
+        GROUP BY exchange ORDER BY exchange;
+    """)
+    for r in rows:
+        logger.info("  prices  %-5s  rows=%-8d  tickers=%-5d  %s → %s",
+                    r["exchange"], r["rows"], r["tickers"], r["earliest"], r["latest"])
+
+
+# ── CLI ─────────────────────────────────────────────────────────────────────
+
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Snowflake Managed Iceberg DDL setup and data loading"
+    )
+    p.add_argument(
+        "--mode",
+        choices=["setup", "full", "delta", "status"],
+        default="delta",
+        help=(
+            "setup  = create schema + external volume + Iceberg tables (run once)\n"
+            "full   = load all S3 raw partitions into Iceberg\n"
+            "delta  = reload last N days only\n"
+            "status = print row counts"
+        ),
+    )
+    p.add_argument("--exchanges", default="US,ASX")
+    p.add_argument("--days", type=int, default=3,
+                   help="Days to cover in delta mode (default: 3)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Log actions but do not execute Snowflake SQL")
+    return p.parse_args()
+
+
+if __name__ == "__main__":
+    args = _parse_args()
+
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(Path(__file__).parent.parent / ".env")
+    except ImportError:
+        pass
+
+    logger.info("═" * 70)
+    logger.info("Snowflake Iceberg sync  mode=%s  exchanges=%s",
+                args.mode, args.exchanges)
+    logger.info("═" * 70)
+
+    exchanges = [e.strip().upper() for e in args.exchanges.split(",") if e.strip()]
+
+    try:
+        with get_sf_conn() as conn:
+            if args.mode == "setup":
+                mode_setup(conn)
+            elif args.mode == "full":
+                mode_full(conn, exchanges, dry_run=args.dry_run)
+            elif args.mode == "delta":
+                mode_delta(conn, exchanges, days=args.days, dry_run=args.dry_run)
+            elif args.mode == "status":
+                mode_status(conn)
+
+        logger.info("═" * 70)
+        logger.info("Done%s", " [DRY RUN]" if args.dry_run else "")
+        logger.info("═" * 70)
+
+    except Exception as e:
+        logger.exception("FATAL: Snowflake sync crashed — %s\n%s", e, traceback.format_exc())
+        raise
