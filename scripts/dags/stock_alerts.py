@@ -1,5 +1,5 @@
 """
-datapai_alerts — Signal change alert sender (Telegram).
+stock_alerts — Signal change alert sender (Telegram).
 Runs every 30 minutes during extended market hours (Mon-Fri 06:00-22:00 UTC)
 to cover Asian, European, and US sessions.
 
@@ -10,13 +10,13 @@ from datetime import datetime, timedelta
 import pendulum
 from airflow.decorators import dag
 from airflow.timetables.trigger import CronTriggerTimetable
-from datapai_common import DEFAULT_ARGS, datapai_bash_task
+from stock_common import DEFAULT_ARGS, stock_bash_task
 
 UTC = pendulum.timezone("UTC")
 
 
 @dag(
-    dag_id="datapai_alerts",
+    dag_id="stock_alerts",
     default_args={**DEFAULT_ARGS, "retries": 1, "execution_timeout": timedelta(minutes=10)},
     timetable=CronTriggerTimetable("*/30 6-22 * * 1-5", timezone=UTC),
     start_date=datetime(2026, 3, 28, tzinfo=UTC),
@@ -25,8 +25,8 @@ UTC = pendulum.timezone("UTC")
     max_active_runs=1,
     is_paused_upon_creation=True,  # disabled by default
 )
-def datapai_alerts():
-    send = datapai_bash_task(
+def stock_alerts():
+    send = stock_bash_task(
         "send_signal_alerts",
         "run_send_alerts.sh",
         execution_timeout=timedelta(minutes=10),
@@ -35,4 +35,4 @@ def datapai_alerts():
     send
 
 
-datapai_alerts()
+stock_alerts()

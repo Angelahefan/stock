@@ -1,5 +1,5 @@
 """
-dags/datapai_common.py — shared helpers for all DataPAI Airflow DAGs.
+dags/stock_common.py — shared helpers for all DataPAI Airflow DAGs.
 Scripts use container Python 3.11 with all deps installed.
 
 Key fix: uses /tmp paths for caches and logs to avoid permission issues
@@ -33,9 +33,9 @@ set -euo pipefail
 _DAG_ID="$${AIRFLOW_CTX_DAG_ID:-default}"
 _TASK_ID="$${AIRFLOW_CTX_TASK_ID:-default}"
 
-export DATAPAI_LOG_DIR="/tmp/datapai_logs/$${_DAG_ID}"
+export DATAPAI_LOG_DIR="/tmp/stock_logs/$${_DAG_ID}"
 export YF_CACHE_DIR="/tmp/yfinance_cache/$${_DAG_ID}/$${_TASK_ID}"
-export HOME="/tmp/datapai_home/$${_DAG_ID}"
+export HOME="/tmp/stock_home/$${_DAG_ID}"
 
 mkdir -p "$DATAPAI_LOG_DIR" "$YF_CACHE_DIR" "$HOME/.cache" 2>/dev/null || true
 mkdir -p /opt/datapai-stock/scripts/logs 2>/dev/null || true
@@ -55,7 +55,7 @@ cd /opt/datapai-stock
 """
 
 
-def datapai_bash_task(task_id: str, script_name: str, args: str = "", **kwargs) -> BashOperator:
+def stock_bash_task(task_id: str, script_name: str, args: str = "", **kwargs) -> BashOperator:
     """Factory for BashOperator tasks that run existing .sh wrappers."""
     return BashOperator(
         task_id=task_id,

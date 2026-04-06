@@ -1,5 +1,5 @@
 """
-datapai_eod_dynamic — DB-driven EOD DAGs for ALL markets.
+stock_eod_dynamic — DB-driven EOD DAGs for ALL markets.
 
 ONE file generates separate DAGs per market, each running independently.
 Market config (schedule, timezone) comes from datapai.market_trading_hours.
@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 import pendulum
 from airflow.decorators import dag
 from airflow.timetables.trigger import CronTriggerTimetable
-from datapai_common import DEFAULT_ARGS, datapai_bash_task
+from stock_common import DEFAULT_ARGS, stock_bash_task
 
 # Markets with extra steps (full pipeline)
 _FULL_PIPELINE = {"US", "ASX"}
@@ -60,7 +60,7 @@ def _create_eod_dag(market: dict):
     cron_hour = market["close_hour"] + ((market["close_minute"] + 10) // 60)
 
     @dag(
-        dag_id=f"datapai_{ex_lower}_eod",
+        dag_id=f"stock_{ex_lower}_eod",
         default_args=DEFAULT_ARGS,
         timetable=CronTriggerTimetable(f"{cron_minute} {cron_hour} * * 1-5", timezone=tz),
         start_date=datetime(2026, 3, 18, tzinfo=tz),
@@ -75,7 +75,7 @@ def _create_eod_dag(market: dict):
             # US: 3 parallel refresh workers (6,700+ tickers)
             refresh_workers = []
             for i in range(_NUM_REFRESH_WORKERS_US):
-                w = datapai_bash_task(
+                w = stock_bash_task(
                     f"refresh_{ex_lower}_batch_{i}",
                     "refresh_ohlcv_daily_us.sh",
                     args=f"--batch-num {i} --total-batches {_NUM_REFRESH_WORKERS_US}",
@@ -85,33 +85,33 @@ def _create_eod_dag(market: dict):
             refresh_step = refresh_workers
         else:
             # All other markets: single refresh
-            refresh_step = datapai_bash_task(
+            refresh_step = stock_bash_task(
                 f"refresh_daily_{ex_lower}",
                 f"refresh_ohlcv_daily_{ex_lower}.sh" if exchange != "ASX" else "refresh_ohlcv_daily_asx.sh",
                 execution_timeout=timedelta(hours=2), retries=2,
             )
 
-        sync_close = datapai_bash_task(
+        sync_close = stock_bash_task(
             f"sync_close_to_intraday_{ex_lower}", "run_sync_close_to_intraday.sh",
             args=f"--exchange {exchange}", execution_timeout=timedelta(minutes=5),
         )
-        fundamental_lite = datapai_bash_task(
+        fundamental_lite = stock_bash_task(
             f"compute_fundamental_lite_{ex_lower}", "run_compute_fundamental_lite.sh",
             args=f"--exchange {exchange}", execution_timeout=timedelta(hours=2),
         )
-        ta_daily = datapai_bash_task(
+        ta_daily = stock_bash_task(
             f"compute_ta_daily_{ex_lower}", "run_compute_ta_daily.sh",
             args=f"--exchange {exchange}", execution_timeout=timedelta(minutes=30),
         )
-        ta_weekly = datapai_bash_task(
+        ta_weekly = stock_bash_task(
             f"compute_ta_weekly_{ex_lower}", "run_compute_ta_weekly.sh",
             args=f"--exchange {exchange}", execution_timeout=timedelta(minutes=30),
         )
-        ta_monthly = datapai_bash_task(
+        ta_monthly = stock_bash_task(
             f"compute_ta_monthly_{ex_lower}", "run_compute_ta_monthly.sh",
             args=f"--exchange {exchange}", execution_timeout=timedelta(minutes=30),
         )
-        screener_metrics = datapai_bash_task(
+        screener_metrics = stock_bash_task(
             f"compute_screener_{ex_lower}", "run_compute_screener_us.sh",
             args=f"--exchange {exchange}", execution_timeout=timedelta(minutes=10),
         )
@@ -121,18 +121,18 @@ def _create_eod_dag(market: dict):
 
         # ── Extra steps for US/ASX (full pipeline) ────────────────────
         if exchange in _FULL_PIPELINE:
-            fundamental = datapai_bash_task(
+            fundamental = stock_bash_task(
                 f"compute_fundamental_{ex_lower}", "run_compute_fundamental.sh",
                 args=f"--exchange {exchange}", execution_timeout=timedelta(hours=2),
             )
-            multi_factor = datapai_bash_task(
+            multi_factor = stock_bash_task(
                 f"compute_multi_factor_{ex_lower}", "run_compute_multi_factor.sh",
                 args=f"--exchange {exchange}", execution_timeout=timedelta(minutes=30),
             )
             screener_metrics >> fundamental >> multi_factor
 
     # Must set function name to avoid Airflow collision
-    eod_pipeline.__name__ = f"datapai_{ex_lower}_eod"
+    eod_pipeline.__name__ = f"stock_{ex_lower}_eod"
     return eod_pipeline()
 
 
