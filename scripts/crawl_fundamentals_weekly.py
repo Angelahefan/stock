@@ -296,8 +296,8 @@ def run(exchange: str, threads: int = 10, skip_days: int = 6, dry_run: bool = Fa
     conn = None
     if not dry_run:
         conn = psycopg2.connect(
-            host=os.environ.get("PGHOST", os.environ.get("DATAPAI_PG_HOST", "localhost")),
-            port=int(os.environ.get("PGPORT", os.environ.get("DATAPAI_PG_PORT", "5432"))),
+            host=os.environ.get("DATAPAI_PG_HOST", os.environ.get("PGHOST", "localhost")),
+            port=int(os.environ.get("DATAPAI_PG_PORT", os.environ.get("PGPORT", "5434"))),
             dbname="postgres",
             user=os.environ.get("PGUSER", os.environ.get("DATAPAI_PG_USER", "postgres")),
             password=os.environ.get("PGPASSWORD", os.environ.get("DATAPAI_PG_PASSWORD", "postgres")),
