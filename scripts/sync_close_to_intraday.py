@@ -21,6 +21,7 @@ import pytz
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from scripts.lib.db_helpers import get_conn, upsert_intraday_rows
 from scripts.lib.log_setup import setup_logging
+from core.config.exchange_registry import registry as _exr
 
 logger = setup_logging("sync_close_to_intraday")
 
@@ -108,9 +109,15 @@ def _run(conn, exchange, mkt):
         logger.info("No EOD data for %s on %s — skipping", exchange, today_local)
         return
 
+    # Strip exchange suffix from prices tickers to match intraday format
+    # prices stores "BHP.AX", intraday stores "BHP" + exchange="ASX"
+    suffix = _exr.get_suffix(exchange)  # e.g. ".AX", ".HK", ""
+    def _strip(t):
+        return t[:-len(suffix)] if suffix and t.endswith(suffix) else t
+
     # Get the last intraday bar's close per ticker (= opening price of the closing bar)
     # and sum of intraday volume (to compute residual volume for closing bar)
-    tickers = [r[0] for r in eod_rows]
+    tickers = [_strip(r[0]) for r in eod_rows]
     placeholders = ",".join(["%s"] * len(tickers))
     tbl = _intraday_table(exchange)
     cur.execute(f"""
@@ -138,7 +145,8 @@ def _run(conn, exchange, mkt):
     #   low   = min(open, close)
     #   volume = daily volume - sum of intraday volumes (residual closing auction volume)
     intraday_rows = []
-    for ticker, _o, _h, _l, c, v in eod_rows:
+    for raw_ticker, _o, _h, _l, c, v in eod_rows:
+        ticker = _strip(raw_ticker)
         close_f = float(c)
         info = last_bar_map.get(ticker, {})
         bar_open = info.get("last_close") or close_f
