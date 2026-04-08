@@ -61,6 +61,63 @@ _API_KEY     = os.getenv("TINYFISH_API_KEY", "")
 _LLM_MODE    = os.getenv("LLM_MODE", "local")
 _LLM_PRIMARY = os.getenv("LLM_PRIMARY_PROVIDER", "openai")
 
+# ── B2B API client auth (for api.datap.ai) ───────────────────────────────────
+import hashlib
+import time as _time
+import psycopg2
+import psycopg2.extras
+
+_FRAMEWORK_DB = {
+    "host": os.getenv("FRAMEWORK_DB_HOST", "localhost"),
+    "port": int(os.getenv("FRAMEWORK_DB_PORT", "5433")),
+    "dbname": os.getenv("FRAMEWORK_DB_NAME", "datapai_auth_db"),
+    "user": os.getenv("FRAMEWORK_DB_USER", "postgres"),
+    "password": os.getenv("FRAMEWORK_DB_PASSWORD", "auth_root_2026"),
+}
+
+
+def _hash_api_key(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+def _verify_b2b_api_key(api_key: str) -> dict | None:
+    """Verify B2B API key against auth.api_clients. Returns client dict or None."""
+    try:
+        conn = psycopg2.connect(**_FRAMEWORK_DB)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            "SELECT client_id, client_name, tier, rate_limit_rpm, monthly_quota, is_active "
+            "FROM auth.api_clients WHERE api_key_hash = %s",
+            [_hash_api_key(api_key)],
+        )
+        client = cur.fetchone()
+        cur.close()
+        conn.close()
+        if client and client["is_active"]:
+            return dict(client)
+        return None
+    except Exception as e:
+        logger.error("B2B API key verification failed: %s", e)
+        return None
+
+
+def _log_api_usage(client_id: str, endpoint: str, method: str, status_code: int,
+                   response_ms: int, ip: str):
+    """Log B2B API usage for billing."""
+    try:
+        conn = psycopg2.connect(**_FRAMEWORK_DB)
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO auth.api_usage_log (client_id, endpoint, method, status_code, response_ms, ip_address) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            [client_id, endpoint, method, status_code, response_ms, ip],
+        )
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.error("API usage logging failed: %s", e)
+
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
@@ -79,6 +136,68 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── B2B API Gateway Middleware ────────────────────────────────────────────────
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import JSONResponse as StarletteJSONResponse
+
+
+class B2BApiMiddleware(BaseHTTPMiddleware):
+    """
+    When request comes via api.datap.ai (Host header), enforce API key auth + log usage.
+    Requests from stock.datap.ai or localhost bypass this (consumer frontend).
+    """
+    async def dispatch(self, request: StarletteRequest, call_next):
+        host = request.headers.get("host", "")
+
+        # Only enforce on api.datap.ai
+        if not host.startswith("api.datap.ai"):
+            return await call_next(request)
+
+        # Skip health + docs endpoints
+        path = request.url.path
+        if path in ("/agent/health", "/docs", "/openapi.json", "/redoc"):
+            return await call_next(request)
+
+        # Extract API key from header: Authorization: ApiKey {key}
+        auth_header = request.headers.get("authorization", "")
+        api_key = ""
+        if auth_header.startswith("ApiKey "):
+            api_key = auth_header[7:]
+        elif auth_header.startswith("Bearer "):
+            api_key = auth_header[7:]
+
+        if not api_key:
+            return StarletteJSONResponse(
+                status_code=401,
+                content={"ok": False, "error": {"code": "MISSING_API_KEY", "message": "API key required. Use header: Authorization: ApiKey YOUR_KEY"}},
+            )
+
+        client = _verify_b2b_api_key(api_key)
+        if not client:
+            return StarletteJSONResponse(
+                status_code=401,
+                content={"ok": False, "error": {"code": "INVALID_API_KEY", "message": "Invalid or inactive API key."}},
+            )
+
+        # Attach client info to request state for downstream use
+        request.state.b2b_client = client
+
+        # Execute request + measure time
+        start = _time.time()
+        response = await call_next(request)
+        elapsed_ms = int((_time.time() - start) * 1000)
+
+        # Log usage (non-blocking)
+        ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else "")
+        _log_api_usage(client["client_id"], path, request.method, response.status_code, elapsed_ms, ip)
+
+        return response
+
+
+app.add_middleware(B2BApiMiddleware)
 
 # ── Stock Chat co-pilot router (sealed module) ────────────────────────────────
 try:
