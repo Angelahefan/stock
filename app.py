@@ -119,6 +119,73 @@ def _log_api_usage(client_id: str, endpoint: str, method: str, status_code: int,
         logger.error("API usage logging failed: %s", e)
 
 
+# ── Webhook firing ───────────────────────────────────────────────────────────
+import hmac as _hmac
+import json as _json
+import concurrent.futures as _futures
+import requests as _http
+
+_webhook_pool = _futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="webhook")
+
+
+def _fire_webhooks(event: str, payload: dict):
+    """Fire webhooks for a given event. Runs in background threads."""
+    try:
+        conn = psycopg2.connect(**_FRAMEWORK_DB)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            "SELECT id, url, secret FROM auth.api_webhooks "
+            "WHERE events @> ARRAY[%s]::text[] AND is_active = TRUE",
+            [event],
+        )
+        webhooks = cur.fetchall()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.error("webhook query failed: %s", e)
+        return
+
+    for wh in webhooks:
+        _webhook_pool.submit(_deliver_webhook, wh["id"], wh["url"], wh["secret"], event, payload)
+
+
+def _deliver_webhook(webhook_id: int, url: str, secret: str, event: str, payload: dict):
+    """POST payload to webhook URL with HMAC signature. Logs result."""
+    body = _json.dumps({"event": event, "data": payload}, default=str)
+    sig = _hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
+    headers = {
+        "Content-Type": "application/json",
+        "X-DataPAI-Event": event,
+        "X-DataPAI-Signature": sig,
+    }
+
+    status_code, success, error_msg, latency_ms = None, False, None, 0
+    try:
+        start = _time.time()
+        resp = _http.post(url, data=body, headers=headers, timeout=10)
+        latency_ms = int((_time.time() - start) * 1000)
+        status_code = resp.status_code
+        success = 200 <= resp.status_code < 300
+    except Exception as e:
+        latency_ms = int((_time.time() - start) * 1000) if 'start' in dir() else 0
+        error_msg = str(e)[:500]
+
+    # Log delivery attempt
+    try:
+        conn = psycopg2.connect(**_FRAMEWORK_DB)
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO auth.api_webhook_log (webhook_id, event, status_code, success, latency_ms, error_msg) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            [webhook_id, event, status_code, success, latency_ms, error_msg],
+        )
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.error("webhook log failed: %s", e)
+
+
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
 app = FastAPI(
@@ -156,9 +223,9 @@ class B2BApiMiddleware(BaseHTTPMiddleware):
         if not host.startswith("api.datap.ai"):
             return await call_next(request)
 
-        # Skip health + docs endpoints
+        # Skip health + docs + status endpoints
         path = request.url.path
-        if path in ("/agent/health", "/docs", "/openapi.json", "/redoc"):
+        if path in ("/agent/health", "/status", "/api/docs", "/docs", "/openapi.json", "/redoc"):
             return await call_next(request)
 
         # Extract API key from header: Authorization: ApiKey {key}
@@ -265,6 +332,108 @@ def health() -> dict:
         contract_version    = "v1",
     )
     return ApiResponse.success(data.model_dump()).model_dump()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET /status — Infrastructure health check
+# ══════════════════════════════════════════════════════════════════════════════
+
+import subprocess as _subprocess
+from datetime import datetime as _dt, timezone as _tz
+
+_STATUS_DBS = {
+    "framework_db": {"port": 5433, "dbname": "datapai_auth_db"},
+    "stock_db":     {"port": 5434, "dbname": "postgres"},
+    "health_db":    {"port": 5435, "dbname": "postgres"},
+    "trade_db":     {"port": 5436, "dbname": "postgres"},
+}
+
+
+def _check_db(name: str, port: int, dbname: str) -> dict:
+    try:
+        start = _time.time()
+        conn = psycopg2.connect(
+            host="localhost", port=port, dbname=dbname,
+            user="postgres", password=_FRAMEWORK_DB["password"],
+            connect_timeout=3,
+        )
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.close()
+        conn.close()
+        return {"status": "up", "latency_ms": int((_time.time() - start) * 1000)}
+    except Exception as e:
+        return {"status": "down", "error": str(e)[:200]}
+
+
+def _check_http(url: str, timeout: int = 5) -> dict:
+    try:
+        start = _time.time()
+        resp = _http.get(url, timeout=timeout)
+        latency_ms = int((_time.time() - start) * 1000)
+        # 401 = service alive but auth required — that's fine
+        if resp.status_code < 500:
+            return {"status": "up", "latency_ms": latency_ms}
+        return {"status": "degraded", "latency_ms": latency_ms, "http_status": resp.status_code}
+    except Exception as e:
+        return {"status": "down", "error": str(e)[:200]}
+
+
+def _check_airflow() -> dict:
+    try:
+        start = _time.time()
+        result = _subprocess.run(
+            ["docker", "exec", "dbt_airflow-airflow-scheduler-1", "airflow", "jobs", "check"],
+            capture_output=True, text=True, timeout=10,
+        )
+        latency_ms = int((_time.time() - start) * 1000)
+        if result.returncode == 0:
+            return {"status": "up", "latency_ms": latency_ms}
+        return {"status": "degraded", "latency_ms": latency_ms, "detail": result.stderr[:200]}
+    except Exception as e:
+        return {"status": "down", "error": str(e)[:200]}
+
+
+@app.get("/status")
+def status_page():
+    """Infrastructure health check — no API key required."""
+    services = {}
+
+    # Self
+    services["stock_be"] = {"status": "up", "latency_ms": 0}
+
+    # Databases
+    for name, cfg in _STATUS_DBS.items():
+        services[name] = _check_db(name, cfg["port"], cfg["dbname"])
+
+    # auth-be
+    services["auth_be"] = _check_http("http://localhost:8008/api/auth/verify")
+
+    # Airflow scheduler
+    services["airflow"] = _check_airflow()
+
+    all_up = all(s["status"] == "up" for s in services.values())
+    return {
+        "ok": all_up,
+        "ts": _dt.now(_tz.utc).isoformat(),
+        "services": services,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET /api/docs — Public B2B API documentation (no auth required)
+# ══════════════════════════════════════════════════════════════════════════════
+
+from pathlib import Path as _Path
+from starlette.responses import HTMLResponse as _HTMLResponse
+
+_DOCS_HTML_PATH = _Path(__file__).parent / "static" / "api_docs.html"
+
+
+@app.get("/api/docs", response_class=_HTMLResponse, include_in_schema=False)
+def api_docs_page():
+    """Public B2B API documentation — no API key required."""
+    return _HTMLResponse(content=_DOCS_HTML_PATH.read_text(), status_code=200)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -406,6 +575,18 @@ def run_financial_signal_pipeline(req: RunPipelineRequest) -> dict:
             changed_snippet = req.changed_snippet,
             llm_client      = llm,
         )
+
+        # Fire webhook if a real signal was detected
+        signal_type = result.get("signal_type") or result.get("classification")
+        if signal_type and signal_type != "NONE":
+            _fire_webhooks("signal.detected", {
+                "ticker": req.ticker,
+                "company_name": req.company_name,
+                "signal_type": signal_type,
+                "source_url": req.source_url,
+                "summary": result.get("summary", ""),
+            })
+
         return ApiResponse.success(result).model_dump()
 
     except Exception as exc:

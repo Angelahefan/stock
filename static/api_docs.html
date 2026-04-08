@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DataP.AI API Documentation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ── Reset + Base ──────────────────────────────────────────────── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --green:#2e8b57;--green-dark:#246d45;--green-light:#e8f5ee;
+  --orange:#fd8412;--orange-light:#fff7ed;
+  --gray-50:#f9fafb;--gray-100:#f3f4f6;--gray-200:#e5e7eb;
+  --gray-300:#d1d5db;--gray-400:#9ca3af;--gray-500:#6b7280;
+  --gray-600:#4b5563;--gray-700:#374151;--gray-800:#1f2937;--gray-900:#111827;
+  --radius:10px;--radius-sm:6px;
+}
+html{scroll-behavior:smooth}
+body{font-family:'Poppins',sans-serif;color:var(--gray-800);background:#fff;line-height:1.65;font-size:15px}
+h1,h2,h3,h4,h5{font-family:'Rajdhani',sans-serif;font-weight:700;line-height:1.2}
+a{color:var(--green);text-decoration:none}
+a:hover{text-decoration:underline}
+code,pre{font-family:'JetBrains Mono',monospace}
+code{background:var(--gray-100);padding:2px 6px;border-radius:4px;font-size:13px}
+pre{background:var(--gray-900);color:#e5e7eb;padding:20px 24px;border-radius:var(--radius);overflow-x:auto;font-size:13px;line-height:1.7}
+pre code{background:none;padding:0;color:inherit}
+.container{max-width:1100px;margin:0 auto;padding:0 24px}
+
+/* ── Hero ──────────────────────────────────────────────────────── */
+.hero{background:linear-gradient(135deg,var(--green-dark) 0%,var(--green) 100%);color:#fff;padding:64px 0 56px}
+.hero h1{font-size:42px;margin-bottom:8px}
+.hero p{font-size:18px;opacity:.88;max-width:600px}
+.hero-badge{display:inline-block;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.25);padding:4px 14px;border-radius:999px;font-size:12px;font-weight:600;letter-spacing:.5px;margin-bottom:18px}
+.hero-links{margin-top:28px;display:flex;gap:12px;flex-wrap:wrap}
+.hero-links a{display:inline-flex;align-items:center;gap:6px;padding:10px 22px;border-radius:var(--radius-sm);font-weight:600;font-size:14px;transition:all .15s}
+.btn-primary{background:#fff;color:var(--green)}
+.btn-primary:hover{background:var(--gray-100);text-decoration:none}
+.btn-secondary{background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.3)}
+.btn-secondary:hover{background:rgba(255,255,255,.2);text-decoration:none}
+
+/* ── Nav ───────────────────────────────────────────────────────── */
+.nav-bar{position:sticky;top:0;z-index:100;background:#fff;border-bottom:1px solid var(--gray-200);padding:0}
+.nav-bar .container{display:flex;gap:4px;overflow-x:auto;padding-top:0;padding-bottom:0}
+.nav-bar a{padding:14px 16px;font-size:13px;font-weight:500;color:var(--gray-500);white-space:nowrap;border-bottom:2px solid transparent;transition:all .15s}
+.nav-bar a:hover{color:var(--green);text-decoration:none}
+.nav-bar a.active{color:var(--green);border-bottom-color:var(--green)}
+
+/* ── Sections ──────────────────────────────────────────────────── */
+section{padding:56px 0;border-bottom:1px solid var(--gray-100)}
+section:last-child{border-bottom:none}
+section h2{font-size:30px;color:var(--gray-900);margin-bottom:8px}
+section .subtitle{color:var(--gray-500);font-size:15px;margin-bottom:32px}
+
+/* ── Quick Start cards ─────────────────────────────────────────── */
+.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;margin-top:28px}
+.step{background:#fff;border:1px solid var(--gray-200);border-radius:var(--radius);padding:28px 24px;position:relative}
+.step:hover{border-color:var(--green);box-shadow:0 4px 12px rgba(46,139,87,.08)}
+.step-num{position:absolute;top:16px;right:16px;width:32px;height:32px;background:var(--green-light);color:var(--green);border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;font-family:'Rajdhani',sans-serif}
+.step h4{font-size:18px;margin-bottom:6px;color:var(--gray-900)}
+.step p{font-size:13px;color:var(--gray-500);margin-bottom:14px}
+
+/* ── Tabs ──────────────────────────────────────────────────────── */
+.tab-group{margin:24px 0}
+.tab-buttons{display:flex;gap:0;border-bottom:1px solid var(--gray-200)}
+.tab-btn{padding:10px 20px;font-size:13px;font-weight:500;cursor:pointer;color:var(--gray-500);background:none;border:none;border-bottom:2px solid transparent;font-family:'Poppins',sans-serif;transition:all .15s}
+.tab-btn:hover{color:var(--green)}
+.tab-btn.active{color:var(--green);border-bottom-color:var(--green)}
+.tab-panel{display:none}
+.tab-panel.active{display:block}
+
+/* ── Endpoint cards ────────────────────────────────────────────── */
+.endpoint-group{margin-bottom:40px}
+.endpoint-group h3{font-size:22px;margin-bottom:6px}
+.endpoint-group .group-desc{color:var(--gray-500);font-size:14px;margin-bottom:16px}
+.endpoint{background:#fff;border:1px solid var(--gray-200);border-radius:var(--radius);margin-bottom:12px;overflow:hidden}
+.endpoint-header{display:flex;align-items:center;gap:12px;padding:16px 20px;cursor:pointer;user-select:none}
+.endpoint-header:hover{background:var(--gray-50)}
+.method{font-size:11px;font-weight:700;padding:4px 10px;border-radius:4px;font-family:'JetBrains Mono',monospace;letter-spacing:.5px;min-width:56px;text-align:center}
+.method-get{background:#dbeafe;color:#1d4ed8}
+.method-post{background:var(--green-light);color:var(--green)}
+.method-patch{background:var(--orange-light);color:var(--orange)}
+.method-delete{background:#fee2e2;color:#dc2626}
+.endpoint-path{font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:500;color:var(--gray-800)}
+.endpoint-desc{font-size:13px;color:var(--gray-500);margin-left:auto}
+.endpoint-body{padding:0 20px 20px;display:none;border-top:1px solid var(--gray-100)}
+.endpoint-body.open{display:block}
+.param-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:12px}
+.param-table th{text-align:left;padding:8px 12px;background:var(--gray-50);border-bottom:1px solid var(--gray-200);color:var(--gray-600);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+.param-table td{padding:8px 12px;border-bottom:1px solid var(--gray-100)}
+.param-name{font-family:'JetBrains Mono',monospace;color:var(--green);font-weight:500}
+.param-required{color:#dc2626;font-size:11px;font-weight:600}
+.param-optional{color:var(--gray-400);font-size:11px}
+
+/* ── Tier table ────────────────────────────────────────────────── */
+.tier-table{width:100%;border-collapse:collapse;font-size:14px;margin-top:20px}
+.tier-table th{text-align:center;padding:14px 16px;background:var(--gray-50);border-bottom:2px solid var(--gray-200);font-weight:600;font-family:'Rajdhani',sans-serif;font-size:16px}
+.tier-table th:first-child{text-align:left}
+.tier-table td{padding:12px 16px;border-bottom:1px solid var(--gray-100);text-align:center}
+.tier-table td:first-child{text-align:left;font-weight:500}
+.tier-table tr:hover{background:var(--gray-50)}
+.tier-highlight{background:var(--green-light) !important}
+.tier-highlight th{color:var(--green)}
+.check{color:var(--green);font-weight:700}
+.cross{color:var(--gray-300)}
+
+/* ── Error table ───────────────────────────────────────────────── */
+.error-table{width:100%;border-collapse:collapse;font-size:13px}
+.error-table th{text-align:left;padding:10px 14px;background:var(--gray-50);border-bottom:2px solid var(--gray-200);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+.error-table td{padding:10px 14px;border-bottom:1px solid var(--gray-100)}
+.error-code{font-family:'JetBrains Mono',monospace;font-weight:500}
+.http-4xx{color:var(--orange)}
+.http-5xx{color:#dc2626}
+
+/* ── Webhook section ───────────────────────────────────────────── */
+.wh-flow{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin:24px 0}
+.wh-step{background:var(--gray-50);border:1px solid var(--gray-200);border-radius:var(--radius);padding:20px;text-align:center}
+.wh-step .num{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;background:var(--green);color:#fff;border-radius:50%;font-weight:700;font-size:13px;margin-bottom:8px}
+.wh-step h4{font-size:15px;margin-bottom:4px}
+.wh-step p{font-size:12px;color:var(--gray-500)}
+
+/* ── Footer ────────────────────────────────────────────────────── */
+.footer{background:var(--gray-50);border-top:1px solid var(--gray-200);padding:40px 0;text-align:center;color:var(--gray-500);font-size:13px}
+.footer a{color:var(--green);font-weight:500}
+
+/* ── Responsive ────────────────────────────────────────────────── */
+@media(max-width:768px){
+  .hero{padding:40px 0 36px}
+  .hero h1{font-size:30px}
+  section{padding:40px 0}
+  .endpoint-desc{display:none}
+  .tier-table{font-size:12px}
+  .tier-table th,.tier-table td{padding:8px 6px}
+}
+</style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════════════════════════
+     HERO
+     ════════════════════════════════════════════════════════════ -->
+<div class="hero">
+  <div class="container">
+    <div class="hero-badge">B2B API v1.0</div>
+    <h1>DataP.AI API</h1>
+    <p>Financial signal detection, technical &amp; fundamental analysis, and AI-powered market intelligence &mdash; all via a single REST API.</p>
+    <div class="hero-links">
+      <a href="#quick-start" class="btn-primary">Quick Start</a>
+      <a href="https://api.datap.ai/docs" class="btn-secondary" target="_blank">Interactive Swagger &rarr;</a>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════
+     STICKY NAV
+     ════════════════════════════════════════════════════════════ -->
+<div class="nav-bar">
+  <div class="container">
+    <a href="#quick-start">Quick Start</a>
+    <a href="#authentication">Authentication</a>
+    <a href="#endpoints">Endpoints</a>
+    <a href="#webhooks">Webhooks</a>
+    <a href="#errors">Errors</a>
+    <a href="#rate-limits">Rate Limits</a>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════
+     QUICK START
+     ════════════════════════════════════════════════════════════ -->
+<section id="quick-start">
+  <div class="container">
+    <h2>Quick Start</h2>
+    <p class="subtitle">Get up and running in 3 steps.</p>
+
+    <div class="steps">
+      <div class="step" style="border-color:var(--orange);border-width:2px">
+        <div class="step-num" style="background:var(--orange-light);color:var(--orange)">1</div>
+        <h4>Get Your API Key</h4>
+        <p>Enter your email to get a free sandbox key instantly. No signup required.</p>
+        <div id="key-form" style="margin-top:14px">
+          <div style="display:flex;gap:8px;margin-bottom:8px">
+            <input type="email" id="reg-email" placeholder="you@company.com"
+              style="flex:1;padding:10px 14px;border:1px solid var(--gray-200);border-radius:var(--radius-sm);font-size:14px;font-family:'Poppins',sans-serif;outline:none">
+          </div>
+          <div style="display:flex;gap:8px">
+            <input type="text" id="reg-company" placeholder="Company name (optional)"
+              style="flex:1;padding:10px 14px;border:1px solid var(--gray-200);border-radius:var(--radius-sm);font-size:14px;font-family:'Poppins',sans-serif;outline:none">
+            <button onclick="requestApiKey()" id="reg-btn"
+              style="padding:10px 24px;background:var(--orange);color:#fff;border:none;border-radius:var(--radius-sm);font-size:14px;font-weight:600;cursor:pointer;font-family:'Poppins',sans-serif;white-space:nowrap">
+              Get Free Key
+            </button>
+          </div>
+          <p style="font-size:11px;color:var(--gray-400);margin-top:8px">Sandbox: 10 req/min, 100/day. No credit card needed.</p>
+        </div>
+        <div id="key-result" style="display:none;margin-top:14px">
+          <div style="background:var(--green-light);border:1px solid var(--green);border-radius:var(--radius-sm);padding:14px 16px">
+            <p style="font-size:13px;font-weight:600;color:var(--green);margin-bottom:6px">Your API Key (save it now!):</p>
+            <code id="key-value" style="font-size:15px;color:var(--gray-900);background:rgba(255,255,255,.7);padding:6px 12px;border-radius:4px;display:block;word-break:break-all;user-select:all"></code>
+            <p style="font-size:11px;color:var(--gray-500);margin-top:8px">This key is shown once and cannot be retrieved again.</p>
+          </div>
+        </div>
+        <div id="key-error" style="display:none;margin-top:14px">
+          <div style="background:#fee2e2;border:1px solid #dc2626;border-radius:var(--radius-sm);padding:12px 16px">
+            <p id="key-error-msg" style="font-size:13px;color:#dc2626"></p>
+          </div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <h4>Make Your First Call</h4>
+        <p>All requests go to <code>https://api.datap.ai</code> with your API key in the header.</p>
+<pre><code>curl https://api.datap.ai/agent/health \
+  -H "Authorization: ApiKey YOUR_KEY"</code></pre>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <h4>Check the Response</h4>
+        <p>Every response follows our standard envelope format.</p>
+<pre><code>{
+  "ok": true,
+  "data": {
+    "service": "datapai-streamlit",
+    "version": "v1"
+  },
+  "error": null
+}</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     AUTHENTICATION
+     ════════════════════════════════════════════════════════════ -->
+<section id="authentication">
+  <div class="container">
+    <h2>Authentication</h2>
+    <p class="subtitle">All API requests require an API key sent in the <code>Authorization</code> header.</p>
+
+    <h4 style="margin-bottom:12px">Supported Formats</h4>
+<pre><code># Preferred
+Authorization: ApiKey dpai_your_key_here
+
+# Also accepted
+Authorization: Bearer dpai_your_key_here</code></pre>
+
+    <div class="tab-group">
+      <div class="tab-buttons">
+        <button class="tab-btn active" data-tab="auth-curl">cURL</button>
+        <button class="tab-btn" data-tab="auth-python">Python</button>
+        <button class="tab-btn" data-tab="auth-js">JavaScript</button>
+      </div>
+      <div class="tab-panel active" id="auth-curl">
+<pre><code>curl -X POST https://api.datap.ai/agent/technical-signal \
+  -H "Authorization: ApiKey dpai_your_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{"ticker": "AAPL"}'</code></pre>
+      </div>
+      <div class="tab-panel" id="auth-python">
+<pre><code>import requests
+
+API_KEY = "dpai_your_key_here"
+BASE    = "https://api.datap.ai"
+
+resp = requests.post(
+    f"{BASE}/agent/technical-signal",
+    headers={"Authorization": f"ApiKey {API_KEY}"},
+    json={"ticker": "AAPL"},
+)
+print(resp.json())</code></pre>
+      </div>
+      <div class="tab-panel" id="auth-js">
+<pre><code>const API_KEY = "dpai_your_key_here";
+const BASE    = "https://api.datap.ai";
+
+const res = await fetch(`${BASE}/agent/technical-signal`, {
+  method: "POST",
+  headers: {
+    "Authorization": `ApiKey ${API_KEY}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ ticker: "AAPL" }),
+});
+const data = await res.json();
+console.log(data);</code></pre>
+      </div>
+    </div>
+
+    <h4 style="margin:24px 0 8px">Response Envelope</h4>
+    <p style="color:var(--gray-500);font-size:14px;margin-bottom:12px">Every endpoint returns this structure:</p>
+<pre><code>{
+  "ok": true | false,
+  "data": { ... } | null,
+  "error": { "code": "ERROR_CODE", "message": "Human-readable" } | null
+}</code></pre>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     ENDPOINTS
+     ════════════════════════════════════════════════════════════ -->
+<section id="endpoints">
+  <div class="container">
+    <h2>API Endpoints</h2>
+    <p class="subtitle">Base URL: <code>https://api.datap.ai</code></p>
+
+    <!-- ── Signal Detection ─────────────────────────────────── -->
+    <div class="endpoint-group">
+      <h3>Signal Detection</h3>
+      <p class="group-desc">Detect financial signals from corporate language changes (TinyFish pipeline).</p>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-post">POST</span>
+          <span class="endpoint-path">/agent/run-financial-signal-pipeline</span>
+          <span class="endpoint-desc">End-to-end signal detection pipeline (v1.5)</span>
+        </div>
+        <div class="endpoint-body">
+          <p style="font-size:13px;color:var(--gray-600);margin-top:12px">Runs the complete TinyFish pipeline: normalize &rarr; classify change type &rarr; detect signal &rarr; investigate &rarr; cross-validate &rarr; summarize.</p>
+          <table class="param-table">
+            <thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td class="param-name">ticker</td><td>string</td><td><span class="param-required">required</span></td><td>Stock symbol (e.g. "AAPL", "BHP.AX")</td></tr>
+              <tr><td class="param-name">company_name</td><td>string</td><td><span class="param-required">required</span></td><td>Full company name</td></tr>
+              <tr><td class="param-name">source_url</td><td>string</td><td><span class="param-required">required</span></td><td>URL where change was detected</td></tr>
+              <tr><td class="param-name">old_text</td><td>string</td><td><span class="param-required">required</span></td><td>Previous version of text</td></tr>
+              <tr><td class="param-name">new_text</td><td>string</td><td><span class="param-required">required</span></td><td>Updated version of text</td></tr>
+              <tr><td class="param-name">changed_snippet</td><td>string</td><td><span class="param-optional">optional</span></td><td>Specific changed portion</td></tr>
+            </tbody>
+          </table>
+<pre style="margin-top:16px"><code># Example
+curl -X POST https://api.datap.ai/agent/run-financial-signal-pipeline \
+  -H "Authorization: ApiKey YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ticker": "AAPL",
+    "company_name": "Apple Inc.",
+    "source_url": "https://apple.com/investor",
+    "old_text": "We expect strong growth in Q3...",
+    "new_text": "Market conditions remain uncertain..."
+  }'</code></pre>
+        </div>
+      </div>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-post">POST</span>
+          <span class="endpoint-path">/agent/detect-financial-signal</span>
+          <span class="endpoint-desc">Classify language changes into signal types</span>
+        </div>
+        <div class="endpoint-body">
+          <p style="font-size:13px;color:var(--gray-600);margin-top:12px">Signal types: <code>GUIDANCE_WITHDRAWAL</code>, <code>RISK_DISCLOSURE</code>, <code>TONE_SHIFT</code>, <code>NONE</code></p>
+          <table class="param-table">
+            <thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td class="param-name">old_text</td><td>string</td><td><span class="param-required">required</span></td><td>Previous version of text</td></tr>
+              <tr><td class="param-name">new_text</td><td>string</td><td><span class="param-required">required</span></td><td>Updated version of text</td></tr>
+              <tr><td class="param-name">changed_snippet</td><td>string</td><td><span class="param-optional">optional</span></td><td>Specific changed portion</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-post">POST</span>
+          <span class="endpoint-path">/agent/cross-validate-signal</span>
+          <span class="endpoint-desc">Verify signals against exchange filings</span>
+        </div>
+        <div class="endpoint-body">
+          <p style="font-size:13px;color:var(--gray-600);margin-top:12px">Cross-references detected signal with official SEC/ASX filings for validation.</p>
+        </div>
+      </div>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-post">POST</span>
+          <span class="endpoint-path">/agent/investigate-signal</span>
+          <span class="endpoint-desc">Deep research a detected signal</span>
+        </div>
+        <div class="endpoint-body">
+          <p style="font-size:13px;color:var(--gray-600);margin-top:12px">Investigates a signal against company public sources, filings, and news.</p>
+        </div>
+      </div>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-post">POST</span>
+          <span class="endpoint-path">/agent/classify-change-type</span>
+          <span class="endpoint-desc">Quality filter for text changes</span>
+        </div>
+        <div class="endpoint-body">
+          <p style="font-size:13px;color:var(--gray-600);margin-top:12px">Classifies changes as <code>CONTENT_CHANGE</code>, <code>ARCHIVE_CHANGE</code>, or <code>LAYOUT_CHANGE</code>. Use to filter noise before signal detection.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Technical Analysis ───────────────────────────────── -->
+    <div class="endpoint-group">
+      <h3>Technical Analysis</h3>
+      <p class="group-desc">Multi-timeframe technical indicators, chart analysis, and trading signals.</p>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-post">POST</span>
+          <span class="endpoint-path">/agent/technical-signal</span>
+          <span class="endpoint-desc">AI-powered multi-timeframe trading signal</span>
+        </div>
+        <div class="endpoint-body">
+          <p style="font-size:13px;color:var(--gray-600);margin-top:12px">Generates trading signal using RSI, MACD, Bollinger Bands, SMA crossovers, KDJ, and volume analysis across multiple timeframes.</p>
+          <table class="param-table">
+            <thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td class="param-name">ticker</td><td>string</td><td><span class="param-required">required</span></td><td>Stock symbol (e.g. "AAPL")</td></tr>
+              <tr><td class="param-name">suffix</td><td>string</td><td><span class="param-optional">optional</span></td><td>Exchange suffix (e.g. ".AX" for ASX)</td></tr>
+            </tbody>
+          </table>
+<pre style="margin-top:16px"><code># Example
+curl -X POST https://api.datap.ai/agent/technical-signal \
+  -H "Authorization: ApiKey YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"ticker": "BHP", "suffix": ".AX"}'</code></pre>
+        </div>
+      </div>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-get">GET</span>
+          <span class="endpoint-path">/agent/intraday-bars</span>
+          <span class="endpoint-desc">Intraday OHLCV bars</span>
+        </div>
+        <div class="endpoint-body">
+          <p style="font-size:13px;color:var(--gray-600);margin-top:12px">Query params: <code>?ticker=AAPL&exchange=US&interval=5m&limit=100</code></p>
+        </div>
+      </div>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-get">GET</span>
+          <span class="endpoint-path">/agent/technical-screener</span>
+          <span class="endpoint-desc">Screen stocks by technical criteria</span>
+        </div>
+        <div class="endpoint-body">
+          <p style="font-size:13px;color:var(--gray-600);margin-top:12px">Query params: <code>?exchange=ASX&signal=BUY&limit=50</code></p>
+        </div>
+      </div>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-post">POST</span>
+          <span class="endpoint-path">/agent/chart-analysis</span>
+          <span class="endpoint-desc">AI chart image analysis</span>
+        </div>
+        <div class="endpoint-body">
+          <p style="font-size:13px;color:var(--gray-600);margin-top:12px">Upload a chart image for AI pattern recognition and analysis.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Fundamental Analysis ─────────────────────────────── -->
+    <div class="endpoint-group">
+      <h3>Fundamental Analysis</h3>
+      <p class="group-desc">Company fundamentals scoring, screening, and comparison.</p>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-post">POST</span>
+          <span class="endpoint-path">/agent/run-fundamental-pipeline</span>
+          <span class="endpoint-desc">Full 10-step fundamental analysis</span>
+        </div>
+        <div class="endpoint-body">
+          <table class="param-table">
+            <thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td class="param-name">ticker</td><td>string</td><td><span class="param-required">required</span></td><td>Stock symbol</td></tr>
+              <tr><td class="param-name">exchange</td><td>string</td><td><span class="param-required">required</span></td><td>Exchange code (US, ASX, HKEX, etc.)</td></tr>
+              <tr><td class="param-name">dry_run</td><td>boolean</td><td><span class="param-optional">optional</span></td><td>If true, skips DB write</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-get">GET</span>
+          <span class="endpoint-path">/agent/fundamental-snapshot</span>
+          <span class="endpoint-desc">Latest fundamental metrics for a ticker</span>
+        </div>
+        <div class="endpoint-body">
+          <p style="font-size:13px;color:var(--gray-600);margin-top:12px">Query params: <code>?ticker=AAPL&exchange=US</code></p>
+        </div>
+      </div>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-get">GET</span>
+          <span class="endpoint-path">/agent/fundamental-screener</span>
+          <span class="endpoint-desc">Screen stocks by fundamental criteria</span>
+        </div>
+        <div class="endpoint-body">
+          <p style="font-size:13px;color:var(--gray-600);margin-top:12px">Query params: <code>?exchange=US&signal=BUY&min_score=7.0&limit=50</code></p>
+        </div>
+      </div>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-post">POST</span>
+          <span class="endpoint-path">/agent/fundamental-compare</span>
+          <span class="endpoint-desc">Compare fundamentals across multiple stocks</span>
+        </div>
+        <div class="endpoint-body">
+<pre style="margin-top:12px"><code>{"tickers": ["AAPL", "MSFT", "GOOGL"], "exchange": "US"}</code></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Synthesis & Intelligence ─────────────────────────── -->
+    <div class="endpoint-group">
+      <h3>Synthesis &amp; Intelligence</h3>
+      <p class="group-desc">Multi-agent debate, risk assessment, and market synthesis.</p>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-post">POST</span>
+          <span class="endpoint-path">/agent/synthesize-signals</span>
+          <span class="endpoint-desc">AI multi-agent signal synthesis</span>
+        </div>
+        <div class="endpoint-body">
+          <p style="font-size:13px;color:var(--gray-600);margin-top:12px">AG2 multi-agent debate system that synthesizes TA/FA/MA signals into a unified recommendation with confidence, thesis, and bull/bear arguments.</p>
+          <table class="param-table">
+            <thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td class="param-name">ticker</td><td>string</td><td><span class="param-required">required</span></td><td>Stock symbol</td></tr>
+              <tr><td class="param-name">exchange</td><td>string</td><td><span class="param-optional">optional</span></td><td>Exchange code (default: "US")</td></tr>
+              <tr><td class="param-name">model</td><td>string</td><td><span class="param-optional">optional</span></td><td>LLM model override (e.g. "gpt-4o")</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-post">POST</span>
+          <span class="endpoint-path">/agent/run-debate-consensus</span>
+          <span class="endpoint-desc">Full multi-agent debate with transcript</span>
+        </div>
+        <div class="endpoint-body">
+          <p style="font-size:13px;color:var(--gray-600);margin-top:12px">Extended version of synthesis with full debate transcript between bull/bear/moderator agents.</p>
+        </div>
+      </div>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-post">POST</span>
+          <span class="endpoint-path">/agent/assess-risk</span>
+          <span class="endpoint-desc">Portfolio risk assessment</span>
+        </div>
+        <div class="endpoint-body">
+          <p style="font-size:13px;color:var(--gray-600);margin-top:12px">Multi-factor risk scoring including volatility, correlation, sector concentration, and macro exposure.</p>
+        </div>
+      </div>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-post">POST</span>
+          <span class="endpoint-path">/agent/exit-signal</span>
+          <span class="endpoint-desc">Exit recommendation engine</span>
+        </div>
+        <div class="endpoint-body">
+          <p style="font-size:13px;color:var(--gray-600);margin-top:12px">Generates exit recommendations based on trailing stop, target price, and deteriorating fundamentals.</p>
+        </div>
+      </div>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-post">POST</span>
+          <span class="endpoint-path">/agent/market-intel-synthesis</span>
+          <span class="endpoint-desc">Market intelligence report</span>
+        </div>
+        <div class="endpoint-body">
+          <p style="font-size:13px;color:var(--gray-600);margin-top:12px">Generates a comprehensive market intelligence synthesis combining macro, sector, and company-level data.</p>
+        </div>
+      </div>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-get">GET</span>
+          <span class="endpoint-path">/agent/watchlist-overview</span>
+          <span class="endpoint-desc">Portfolio watchlist summary</span>
+        </div>
+        <div class="endpoint-body">
+          <p style="font-size:13px;color:var(--gray-600);margin-top:12px">Returns aggregated signals and scores for all stocks in a user's watchlist.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── News & Events ────────────────────────────────────── -->
+    <div class="endpoint-group">
+      <h3>News &amp; Events</h3>
+      <p class="group-desc">Market news monitoring and material event detection.</p>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-post">POST</span>
+          <span class="endpoint-path">/agent/check-news</span>
+          <span class="endpoint-desc">Check latest news for a stock</span>
+        </div>
+        <div class="endpoint-body">
+          <p style="font-size:13px;color:var(--gray-600);margin-top:12px">Fetches and analyzes recent news articles relevant to a given ticker.</p>
+        </div>
+      </div>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-get">GET</span>
+          <span class="endpoint-path">/agent/material-events/{ticker}</span>
+          <span class="endpoint-desc">Material events in last 72 hours</span>
+        </div>
+        <div class="endpoint-body">
+          <p style="font-size:13px;color:var(--gray-600);margin-top:12px">Detects material events (earnings surprises, management changes, regulatory actions) within a 72-hour window.</p>
+        </div>
+      </div>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-get">GET</span>
+          <span class="endpoint-path">/agent/index-overview</span>
+          <span class="endpoint-desc">Market index analysis</span>
+        </div>
+        <div class="endpoint-body">
+          <p style="font-size:13px;color:var(--gray-600);margin-top:12px">Returns analysis of major market indices with trend, breadth, and sentiment indicators.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Market Data ──────────────────────────────────────── -->
+    <div class="endpoint-group">
+      <h3>Market Data &amp; Reports</h3>
+      <p class="group-desc">Pre-computed reports and data endpoints.</p>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-get">GET</span>
+          <span class="endpoint-path">/agent/consensus-report/{ticker}</span>
+          <span class="endpoint-desc">Full consensus report for a ticker</span>
+        </div>
+        <div class="endpoint-body">
+          <p style="font-size:13px;color:var(--gray-600);margin-top:12px">Returns the latest pre-generated consensus report including TA, FA, synthesis, and risk.</p>
+        </div>
+      </div>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-get">GET</span>
+          <span class="endpoint-path">/agent/health</span>
+          <span class="endpoint-desc">Service health check</span>
+        </div>
+        <div class="endpoint-body">
+          <p style="font-size:13px;color:var(--gray-600);margin-top:12px">Returns service version, LLM capabilities, and contract version. Use to verify API is reachable.</p>
+        </div>
+      </div>
+
+      <div class="endpoint">
+        <div class="endpoint-header" onclick="toggleEndpoint(this)">
+          <span class="method method-get">GET</span>
+          <span class="endpoint-path">/status</span>
+          <span class="endpoint-desc">Infrastructure status (no auth required)</span>
+        </div>
+        <div class="endpoint-body">
+          <p style="font-size:13px;color:var(--gray-600);margin-top:12px">Returns health status of all backend services and databases. No API key required.</p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     WEBHOOKS
+     ════════════════════════════════════════════════════════════ -->
+<section id="webhooks">
+  <div class="container">
+    <h2>Webhooks</h2>
+    <p class="subtitle">Receive real-time notifications when signals are detected.</p>
+
+    <div class="wh-flow">
+      <div class="wh-step">
+        <div class="num">1</div>
+        <h4>Register</h4>
+        <p>Create a webhook via the API and save the signing secret.</p>
+      </div>
+      <div class="wh-step">
+        <div class="num">2</div>
+        <h4>Receive</h4>
+        <p>DataP.AI POSTs JSON to your URL when events occur.</p>
+      </div>
+      <div class="wh-step">
+        <div class="num">3</div>
+        <h4>Verify</h4>
+        <p>Validate the <code>X-DataPAI-Signature</code> HMAC header.</p>
+      </div>
+    </div>
+
+    <h4 style="margin:28px 0 8px">Events</h4>
+    <table class="param-table">
+      <thead><tr><th>Event</th><th>Description</th><th>Triggered By</th></tr></thead>
+      <tbody>
+        <tr><td class="param-name">signal.detected</td><td>Financial signal detected in corporate text</td><td>Signal pipeline (non-NONE results)</td></tr>
+        <tr><td class="param-name">signal.validated</td><td>Signal cross-validated against filings</td><td>Cross-validation pass</td></tr>
+        <tr><td class="param-name">signal.summary</td><td>Investor-friendly summary generated</td><td>Summary pipeline completion</td></tr>
+      </tbody>
+    </table>
+
+    <h4 style="margin:28px 0 8px">Webhook Payload</h4>
+<pre><code>POST https://your-server.com/webhook
+Content-Type: application/json
+X-DataPAI-Event: signal.detected
+X-DataPAI-Signature: sha256=a1b2c3d4e5f6...
+
+{
+  "event": "signal.detected",
+  "data": {
+    "ticker": "AAPL",
+    "company_name": "Apple Inc.",
+    "signal_type": "GUIDANCE_WITHDRAWAL",
+    "source_url": "https://apple.com/investor",
+    "summary": "Apple removed forward guidance language..."
+  }
+}</code></pre>
+
+    <h4 style="margin:28px 0 8px">Verifying Signatures</h4>
+    <div class="tab-group">
+      <div class="tab-buttons">
+        <button class="tab-btn active" data-tab="wh-python">Python</button>
+        <button class="tab-btn" data-tab="wh-js">JavaScript</button>
+      </div>
+      <div class="tab-panel active" id="wh-python">
+<pre><code>import hmac, hashlib
+
+def verify_webhook(body: bytes, signature: str, secret: str) -> bool:
+    expected = hmac.new(
+        secret.encode(), body, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, signature)</code></pre>
+      </div>
+      <div class="tab-panel" id="wh-js">
+<pre><code>const crypto = require("crypto");
+
+function verifyWebhook(body, signature, secret) {
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(body)
+    .digest("hex");
+  return crypto.timingSafeEqual(
+    Buffer.from(expected), Buffer.from(signature)
+  );
+}</code></pre>
+      </div>
+    </div>
+
+    <h4 style="margin:28px 0 8px">Managing Webhooks</h4>
+    <p style="font-size:14px;color:var(--gray-600);margin-bottom:12px">Use the admin API at <code>auth.datap.ai</code> (requires JWT login):</p>
+    <div class="endpoint">
+      <div class="endpoint-header" onclick="toggleEndpoint(this)">
+        <span class="method method-post">POST</span>
+        <span class="endpoint-path">/api/auth/api-clients/{client_id}/webhooks</span>
+        <span class="endpoint-desc">Register a webhook URL</span>
+      </div>
+      <div class="endpoint-body">
+<pre style="margin-top:12px"><code>{"url": "https://your-server.com/webhook", "events": ["signal.detected"]}</code></pre>
+        <p style="font-size:13px;color:var(--gray-500);margin-top:8px">Returns the signing <code>secret</code> once &mdash; save it immediately.</p>
+      </div>
+    </div>
+    <div class="endpoint">
+      <div class="endpoint-header" onclick="toggleEndpoint(this)">
+        <span class="method method-get">GET</span>
+        <span class="endpoint-path">/api/auth/api-clients/{client_id}/webhooks</span>
+        <span class="endpoint-desc">List all webhooks</span>
+      </div>
+      <div class="endpoint-body"><p style="font-size:13px;color:var(--gray-500);margin-top:12px">Returns webhooks with delivery stats (7-day counts).</p></div>
+    </div>
+    <div class="endpoint">
+      <div class="endpoint-header" onclick="toggleEndpoint(this)">
+        <span class="method method-patch">PATCH</span>
+        <span class="endpoint-path">/api/auth/api-clients/{client_id}/webhooks/{id}</span>
+        <span class="endpoint-desc">Update webhook URL, events, or status</span>
+      </div>
+      <div class="endpoint-body">
+<pre style="margin-top:12px"><code>{"url": "https://new-url.com/hook", "is_active": false}</code></pre>
+      </div>
+    </div>
+    <div class="endpoint">
+      <div class="endpoint-header" onclick="toggleEndpoint(this)">
+        <span class="method method-delete">DELETE</span>
+        <span class="endpoint-path">/api/auth/api-clients/{client_id}/webhooks/{id}</span>
+        <span class="endpoint-desc">Delete a webhook</span>
+      </div>
+      <div class="endpoint-body"><p style="font-size:13px;color:var(--gray-500);margin-top:12px">Permanently removes the webhook.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     ERRORS
+     ════════════════════════════════════════════════════════════ -->
+<section id="errors">
+  <div class="container">
+    <h2>Error Codes</h2>
+    <p class="subtitle">All errors return the standard envelope with <code>ok: false</code>.</p>
+
+    <table class="error-table">
+      <thead><tr><th>HTTP</th><th>Code</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td class="error-code http-4xx">401</td><td><code>MISSING_API_KEY</code></td><td>No API key provided in Authorization header</td></tr>
+        <tr><td class="error-code http-4xx">401</td><td><code>INVALID_API_KEY</code></td><td>API key is invalid, expired, or deactivated</td></tr>
+        <tr><td class="error-code http-4xx">400</td><td><code>MISSING_TICKER</code></td><td>Required ticker parameter not provided</td></tr>
+        <tr><td class="error-code http-4xx">404</td><td><code>NOT_FOUND</code></td><td>Requested resource not found (e.g. no snapshot for ticker)</td></tr>
+        <tr><td class="error-code http-4xx">429</td><td><code>RATE_LIMIT_EXCEEDED</code></td><td>Too many requests &mdash; wait and retry</td></tr>
+        <tr><td class="error-code http-5xx">500</td><td><code>PIPELINE_ERROR</code></td><td>Signal detection pipeline internal error</td></tr>
+        <tr><td class="error-code http-5xx">500</td><td><code>FUNDAMENTAL_PIPELINE_ERROR</code></td><td>Fundamental analysis pipeline error</td></tr>
+        <tr><td class="error-code http-5xx">500</td><td><code>SYNTHESIS_ERROR</code></td><td>Signal synthesis / debate engine error</td></tr>
+        <tr><td class="error-code http-5xx">500</td><td><code>TECHNICAL_SIGNAL_ERROR</code></td><td>Technical analysis computation error</td></tr>
+      </tbody>
+    </table>
+
+    <h4 style="margin:28px 0 8px">Error Response Example</h4>
+<pre><code>{
+  "ok": false,
+  "data": null,
+  "error": {
+    "code": "INVALID_API_KEY",
+    "message": "Invalid or inactive API key."
+  }
+}</code></pre>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     RATE LIMITS & TIERS
+     ════════════════════════════════════════════════════════════ -->
+<section id="rate-limits">
+  <div class="container">
+    <h2>Rate Limits &amp; Pricing Tiers</h2>
+    <p class="subtitle">Each API key has a tier that determines rate limits and access.</p>
+
+    <table class="tier-table">
+      <thead>
+        <tr>
+          <th></th>
+          <th>Sandbox</th>
+          <th>Starter</th>
+          <th class="tier-highlight">Growth</th>
+          <th>Enterprise</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>Rate limit</td><td>10 RPM</td><td>60 RPM</td><td class="tier-highlight">200 RPM</td><td>Custom</td></tr>
+        <tr><td>Monthly quota</td><td>100/day</td><td>10,000</td><td class="tier-highlight">100,000</td><td>Unlimited</td></tr>
+        <tr><td>Signal Detection</td><td class="check">&#10003;</td><td class="check">&#10003;</td><td class="check tier-highlight">&#10003;</td><td class="check">&#10003;</td></tr>
+        <tr><td>Technical Analysis</td><td class="check">&#10003;</td><td class="check">&#10003;</td><td class="check tier-highlight">&#10003;</td><td class="check">&#10003;</td></tr>
+        <tr><td>Fundamental Analysis</td><td class="cross">&mdash;</td><td class="check">&#10003;</td><td class="check tier-highlight">&#10003;</td><td class="check">&#10003;</td></tr>
+        <tr><td>AI Synthesis &amp; Debate</td><td class="cross">&mdash;</td><td class="cross">&mdash;</td><td class="check tier-highlight">&#10003;</td><td class="check">&#10003;</td></tr>
+        <tr><td>Webhooks</td><td class="cross">&mdash;</td><td>2 webhooks</td><td class="tier-highlight">10 webhooks</td><td>Unlimited</td></tr>
+        <tr><td>Support</td><td>Community</td><td>Email</td><td class="tier-highlight">Priority email</td><td>Dedicated + SLA</td></tr>
+        <tr><td>Price</td><td>Free</td><td>$49/mo</td><td class="tier-highlight"><strong>$199/mo</strong></td><td>Contact us</td></tr>
+      </tbody>
+    </table>
+
+    <div style="margin-top:24px;background:var(--green-light);border:1px solid var(--green);border-radius:var(--radius);padding:20px 24px">
+      <h4 style="font-size:16px;color:var(--green);margin-bottom:6px">Upgrade Your Tier</h4>
+      <p style="font-size:14px;color:var(--gray-600);margin-bottom:12px">
+        Ready for more? Register an account at <a href="https://auth.datap.ai/register" target="_blank">auth.datap.ai</a>,
+        then create higher-tier API keys from your dashboard. Stripe billing integration coming soon &mdash; for Enterprise tier,
+        contact <a href="mailto:info@datap.ai">info@datap.ai</a>.
+      </p>
+    </div>
+
+    <p style="margin-top:20px;font-size:13px;color:var(--gray-500)">
+      Rate limits are measured per minute (RPM). If you exceed the limit, requests return <code>429 RATE_LIMIT_EXCEEDED</code>.
+      Retry after 60 seconds. Monthly quota resets on the 1st of each month (UTC).
+    </p>
+
+    <h4 style="margin:28px 0 8px">Supported Exchanges</h4>
+    <p style="font-size:14px;color:var(--gray-600)">
+      US (NYSE/NASDAQ) &bull; ASX &bull; HKEX &bull; TSE &bull; SSE &bull; SZSE &bull; TWSE &bull;
+      HOSE &bull; SET &bull; KLSE &bull; IDX &bull; SGX &bull; LSE
+    </p>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     FOOTER
+     ════════════════════════════════════════════════════════════ -->
+<div class="footer">
+  <div class="container">
+    <p>&copy; 2026 DataP.AI &mdash; Financial Intelligence API</p>
+    <p style="margin-top:8px">
+      <a href="https://datap.ai/for-brokers">For Brokers</a> &bull;
+      <a href="https://api.datap.ai/docs">Swagger UI</a> &bull;
+      <a href="https://api.datap.ai/status">System Status</a> &bull;
+      <a href="mailto:info@datap.ai">info@datap.ai</a>
+    </p>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════
+     JS — tabs + accordion
+     ════════════════════════════════════════════════════════════ -->
+<script>
+// API key self-service registration
+async function requestApiKey() {
+  const email = document.getElementById('reg-email').value.trim();
+  const company = document.getElementById('reg-company').value.trim();
+  const btn = document.getElementById('reg-btn');
+  const errDiv = document.getElementById('key-error');
+  const errMsg = document.getElementById('key-error-msg');
+  const resultDiv = document.getElementById('key-result');
+
+  errDiv.style.display = 'none';
+  resultDiv.style.display = 'none';
+
+  if (!email || !email.includes('@')) {
+    errDiv.style.display = 'block';
+    errMsg.textContent = 'Please enter a valid email address.';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Creating...';
+
+  try {
+    const resp = await fetch('https://auth.datap.ai/api/auth/api-clients/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, company_name: company }),
+    });
+    const data = await resp.json();
+
+    if (data.ok && data.api_key) {
+      document.getElementById('key-value').textContent = data.api_key;
+      resultDiv.style.display = 'block';
+      document.getElementById('key-form').style.display = 'none';
+    } else {
+      errDiv.style.display = 'block';
+      errMsg.textContent = data.detail || 'Failed to create API key. Please try again.';
+    }
+  } catch (e) {
+    errDiv.style.display = 'block';
+    errMsg.textContent = 'Network error. Please try again later.';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Get Free Key';
+  }
+}
+
+// Tab switching
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const group = btn.closest('.tab-group');
+    group.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    group.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById(btn.dataset.tab).classList.add('active');
+  });
+});
+
+// Endpoint accordion
+function toggleEndpoint(header) {
+  const body = header.nextElementSibling;
+  body.classList.toggle('open');
+}
+
+// Sticky nav active state
+const sections = document.querySelectorAll('section[id]');
+const navLinks = document.querySelectorAll('.nav-bar a');
+window.addEventListener('scroll', () => {
+  let current = '';
+  sections.forEach(s => {
+    if (window.scrollY >= s.offsetTop - 80) current = s.id;
+  });
+  navLinks.forEach(a => {
+    a.classList.toggle('active', a.getAttribute('href') === '#' + current);
+  });
+});
+</script>
+</body>
+</html>
