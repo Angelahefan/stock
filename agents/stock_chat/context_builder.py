@@ -110,7 +110,7 @@ def _fetch_live_price(ticker: str, exchange: str) -> str:
                 if snap.get("prev_close"):
                     lines.append(f"Prev Close:    {snap['prev_close']:.4f} USD")
                 if snap.get("change_pct") is not None:
-                    lines.append(f"Change:        {snap['change_pct']:+.2f}% vs prev close")
+                    lines.append(f"Change: {snap['change_pct']:+.2f}%")
                 lines.append("(Source: Polygon.io real-time — use these prices to answer price questions)")
                 return "\n".join(lines)
         except Exception as e:
@@ -148,8 +148,9 @@ def _fetch_live_price(ticker: str, exchange: str) -> str:
         if day_high and day_low:
             lines.append(f"Today's range: {day_low:.4f} – {day_high:.4f} {currency}")
         if prev_close and price:
-            chg_pct = (price - prev_close) / prev_close * 100
-            lines.append(f"Change vs prev close: {chg_pct:+.2f}%")
+            chg = price - prev_close
+            chg_pct = chg / prev_close * 100
+            lines.append(f"Change: {chg:+.2f} ({chg_pct:+.2f}%)")
         lines.append("(Source: Yahoo Finance ~15-min delayed — use these prices to answer price questions)")
         return "\n".join(lines)
     except Exception as e:
