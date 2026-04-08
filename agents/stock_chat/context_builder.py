@@ -91,7 +91,17 @@ def _fetch_live_price(ticker: str, exchange: str) -> str:
             snap = PolygonProvider().fetch_snapshot(ticker)
             if snap and snap.get("price"):
                 p   = snap["price"]
-                lines = [f"Current price: {p:.4f} USD"]
+                # Get company name from DB
+                company_name = ""
+                try:
+                    from agents.stock_chat.db import query
+                    rows = query("SELECT name FROM datapai.stock_directory WHERE symbol = %s LIMIT 1", (ticker.upper(),))
+                    if rows:
+                        company_name = rows[0]["name"]
+                except Exception:
+                    pass
+                name_str = f"{company_name} ({ticker}): " if company_name else f"{ticker}: "
+                lines = [f"{name_str}{p:.4f} USD"]
                 if snap.get("open"):
                     lines.append(f"Today's Open:  {snap['open']:.4f} USD")
                 if snap.get("high") and snap.get("low"):
@@ -110,7 +120,22 @@ def _fetch_live_price(ticker: str, exchange: str) -> str:
     try:
         import yfinance as yf
         yf_symbol = f"{ticker}.AX" if is_asx else ticker
-        info      = yf.Ticker(yf_symbol).fast_info
+        yf_ticker = yf.Ticker(yf_symbol)
+        info      = yf_ticker.fast_info
+        # Get company name from our DB first (faster), fallback to yfinance
+        company_name = ""
+        try:
+            from .db import query
+            rows = query("SELECT name FROM datapai.stock_directory WHERE symbol = %s LIMIT 1", (ticker.upper(),))
+            if rows:
+                company_name = rows[0]["name"]
+        except Exception:
+            pass
+        if not company_name:
+            try:
+                company_name = yf_ticker.info.get("shortName") or yf_ticker.info.get("longName") or ""
+            except Exception:
+                pass
         price     = info.get("lastPrice") or info.get("previousClose")
         day_high  = info.get("dayHigh")
         day_low   = info.get("dayLow")
@@ -118,7 +143,8 @@ def _fetch_live_price(ticker: str, exchange: str) -> str:
         currency  = info.get("currency", "AUD" if is_asx else "USD")
         if not price:
             return ""
-        lines = [f"Current price: {price:.4f} {currency}"]
+        name_str = f"{company_name} ({yf_symbol}): " if company_name else f"{yf_symbol}: "
+        lines = [f"{name_str}{price:.4f} {currency}"]
         if day_high and day_low:
             lines.append(f"Today's range: {day_low:.4f} – {day_high:.4f} {currency}")
         if prev_close and price:
