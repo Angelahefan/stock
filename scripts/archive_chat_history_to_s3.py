@@ -91,13 +91,23 @@ for _p in [Path("/home/ec2-user/.env.dev")]:
 
 
 def get_conn() -> psycopg2.extensions.connection:
-    """Direct connection to datapai_framework_db on port 5433."""
+    """Direct connection to datapai_framework_db on port 5433.
+
+    Uses the same pattern as agents/stock_chat/fw_db.py — AUTH_DB_USER +
+    AUTH_DB_PASSWORD. We intentionally do NOT fall back to
+    AUTH_DB_ROOT_PASSWORD: the original "prefer root for DELETE privilege"
+    comment was wrong because the user stayed auth_service while the
+    password was switched to the postgres root — those don't match.
+    auth_service has full INSERT/UPDATE/DELETE grants on datapai.* from
+    Phase 1.10 / 1.13 migrations, so it can handle the archival DELETE
+    without needing root access.
+    """
     return psycopg2.connect(
         host=os.getenv("AUTH_DB_HOST", "localhost"),
         port=int(os.getenv("AUTH_DB_PORT", "5433")),
         dbname=os.getenv("AUTH_DB_NAME", "datapai_auth_db"),
-        user=os.getenv("AUTH_DB_USER", "postgres"),  # prefer root for DELETE privilege
-        password=os.getenv("AUTH_DB_ROOT_PASSWORD") or os.getenv("AUTH_DB_PASSWORD", ""),
+        user=os.getenv("AUTH_DB_USER", "auth_service"),
+        password=os.getenv("AUTH_DB_PASSWORD", ""),
         connect_timeout=15,
     )
 

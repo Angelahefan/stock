@@ -42,10 +42,14 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 LOG_DIR="/var/log/datapai"
 
 # ── 1. Load environment ───────────────────────────────────────────────────────
+# First try the EC2 host paths (most specific), then the container bind-mount
+# paths, then bash_profile as a last resort. First match wins since set -a
+# exports keep their initial value until explicitly overwritten.
 set +u
-[[ -f "$HOME/.bash_profile" ]] && source "$HOME/.bash_profile" || true
+[[ -f "$HOME/.env.dev" ]]      && set -a && source "$HOME/.env.dev"      && set +a || true
 [[ -f /opt/datapai/.env.dev ]] && set -a && source /opt/datapai/.env.dev && set +a || true
 [[ -f /opt/datapai/.env ]]     && set -a && source /opt/datapai/.env     && set +a || true
+[[ -f "$HOME/.bash_profile" ]] && source "$HOME/.bash_profile" || true
 set -u
 
 # ── 2. Ensure log directory ───────────────────────────────────────────────────
