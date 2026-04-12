@@ -22,6 +22,7 @@ from .history import get_or_create_session, create_new_session, save_message, ge
 from .user_profile import get_profile, update_profile
 from .context_builder import build_system_prompt
 from .user_context import extract_user_context_fast, sync_watchlist_to_context
+from .twenty_context import log_chat_to_twenty
 from .db import query, execute
 
 logger = logging.getLogger(__name__)
@@ -455,6 +456,23 @@ async def stock_chat(req: ChatRequest):
         except Exception as e:
             logger.warning("Message persist failed (non-fatal): %s", e)
 
+    # ── 7b. Log chat to Twenty CRM as a Note on stockClient (Phase 1.12.2) ──
+    # Fire-and-forget audit trail. Failures are logged but do NOT affect the
+    # chat response. Never raises.
+    if user_id_str:
+        try:
+            log_chat_to_twenty(
+                user_id=user_id_str,
+                user_message=req.message,
+                assistant_reply=reply,
+                ticker=ticker,
+                exchange=exchange,
+                model=model,
+                tokens_used=tokens,
+            )
+        except Exception as e:
+            logger.warning("Twenty chat log failed (non-fatal): %s", e)
+
     return {
         "ok":         True,
         "reply":      reply,
@@ -709,6 +727,23 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
                     extract_and_save_preferences(user_id_str, req.message)
             except Exception as e:
                 logger.warning("Persist failed (non-fatal): %s", e)
+
+        # Log chat to Twenty CRM as a Note on stockClient (Phase 1.12.2)
+        # Fire-and-forget audit trail. Non-fatal on any failure.
+        if user_id_str and full_reply:
+            try:
+                est_tokens_for_note = (len(req.message) + len(full_reply)) // 4
+                log_chat_to_twenty(
+                    user_id=user_id_str,
+                    user_message=req.message,
+                    assistant_reply=full_reply,
+                    ticker=ticker,
+                    exchange=exchange,
+                    model=model_used,
+                    tokens_used=est_tokens_for_note,
+                )
+            except Exception as e:
+                logger.warning("Twenty chat log failed (non-fatal): %s", e)
 
         # Record token usage (estimate: ~4 chars per token)
         est_tokens = (len(req.message) + len(full_reply)) // 4

@@ -17,6 +17,7 @@ from .user_profile import build_profile_context
 from .rag_retriever import retrieve_scan_context, get_postgres_context, get_ta_signal_context, get_fundamental_context
 from .history import build_preferences_context
 from .user_context import build_user_context_block
+from .twenty_context import build_twenty_context_block
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +278,22 @@ def build_system_prompt(
             if pref_ctx:
                 parts.append("")
                 parts.append(pref_ctx)
+
+    # ── Twenty CRM stockClient context (Phase 1.12.1) ─────────────────────────
+    # Structured identity + plan data fetched from Twenty CRM at request time.
+    # Complements the user_context block above: this has subscription plan,
+    # preferred markets (synced from watchlist), devices, signup source, last
+    # login. Graceful degradation if Twenty is unreachable or the user has no
+    # stockClient record — returns empty string and we skip the block.
+    if user_id:
+        try:
+            crm_block = build_twenty_context_block(user_id)
+            if crm_block:
+                parts.append("")
+                parts.append(crm_block)
+        except Exception as e:
+            # Never let a Twenty failure break the chat
+            logger.warning("[context_builder] Twenty CRM block failed (non-fatal): %s", e)
 
     # ── Language instruction ──────────────────────────────────────────────────
     _LANG_COMMON = " Translate ALL labels including: Open→开盘/Mở cửa, High→最高/Cao nhất, Low→最低/Thấp nhất, Vol→成交量/KL, Live→实时/Trực tiếp, Close→收盘/Đóng cửa, and the disclaimer. Keep ticker symbols, numbers, exchange codes and city names in English."

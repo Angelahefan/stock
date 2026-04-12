@@ -39,10 +39,15 @@ from typing import Any
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-# Make lib/ importable when running as a script
+# Make the project root importable when running as a script, so we can
+# `from agents.lib.twenty_client import ...`. twenty_client.py moved from
+# scripts/lib/ to agents/lib/ in Phase 1.12 so the chatbot (which runs in the
+# FastAPI app context) can share the same client module.
 _SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(_SCRIPT_DIR))
-from lib.twenty_client import TwentyClient, upper_enum  # noqa: E402
+_PROJECT_ROOT = _SCRIPT_DIR.parent
+sys.path.insert(0, str(_SCRIPT_DIR))   # keeps scripts/lib/ importable (db_helpers, log_setup)
+sys.path.insert(0, str(_PROJECT_ROOT)) # allows `from agents.lib.twenty_client import ...`
+from agents.lib.twenty_client import TwentyClient, upper_enum  # noqa: E402
 
 
 # ── Logging ──────────────────────────────────────────────────────────────────

@@ -1,5 +1,42 @@
 # datapai-stock-be — CHANGELOG
 
+## 2026-04-12 — Phase 1.12 (AI chatbot ↔ Twenty CRM integration)
+
+**Detailed journal**: [docs/phase-journals/2026-04-12-phase-1.12-implementation.md](docs/phase-journals/2026-04-12-phase-1.12-implementation.md)
+**Design doc**: [docs/phase-journals/2026-04-12-phase-1.12-chatbot-crm-design.md](docs/phase-journals/2026-04-12-phase-1.12-chatbot-crm-design.md)
+
+### Added
+
+- **`agents/stock_chat/twenty_context.py`** — new module bridging the chatbot with Twenty CRM. Two public functions:
+  - `build_twenty_context_block(user_id)` — reads the user's stockClient record and returns a `[Customer Profile — from CRM]` system prompt block (plan, markets, signup source, last login, device count, monthly queries). Graceful degradation — returns empty string for anonymous, None, unknown users, or if Twenty is down.
+  - `log_chat_to_twenty(user_id, user_message, assistant_reply, ticker, exchange, model, tokens_used, latency_ms)` — creates a Note in Twenty linked to the user's stockClient via `noteTarget`. Fire-and-forget; non-blocking. Title format: `Chat [TICKER]: <first 60 chars>`. Body format: markdown with user + assistant sections + metadata.
+- **`agents/lib/`** — new package directory for modules shared between FastAPI app (`agents/...`) and CLI scripts (`scripts/...`).
+- **`agents/lib/twenty_client.py`** — moved from `scripts/lib/twenty_client.py` via `git mv` so both the chatbot and the sync script can share one client module.
+- **Smart user-id resolution in `_get_email_from_user_id()`** — handles both full UUID strings AND the "parseInt(UUID)" prefix trick that the Next.js frontend's chat route uses (e.g. `parseInt("9974f810-...") = 9974`). Looks up via `LIKE '<prefix>%'` when the id is short, direct match when it's a full 32+ char string.
+
+### Changed
+
+- **`agents/stock_chat/context_builder.py`** — added `build_twenty_context_block(user_id)` call alongside the existing `build_user_context_block()` so the chat system prompt now includes both: the LLM-learned fine-grained preferences (sys_user_context) AND the structured CRM identity data from Twenty.
+- **`agents/stock_chat/endpoint.py`** — both the non-streaming `/agent/stock-chat` and streaming `/agent/stock-chat/stream` endpoints now call `log_chat_to_twenty()` after the chat response is persisted locally. Wrapped in try/except — never blocks or fails the user's chat.
+- **`scripts/stock_crm_client_sync.py`** — import updated from `from lib.twenty_client` → `from agents.lib.twenty_client`. Added project root to sys.path so the CLI script can reach `agents.lib.twenty_client`. Regression-tested post-move; sync DAG still loads enums from Twenty correctly.
+
+### Discovered (NOT fixed — awaiting user decision)
+
+Two pre-existing FDW bugs in the chat history persistence path. Same class of bug as the `_log_notification` FDW DEFAULT-bypass fixed on 2026-04-11:
+
+- `datapai.chat_sessions` INSERT crashes with `null value in column "id" violates not-null constraint` because postgres_fdw sends the full column list with NULL for unspecified columns, bypassing the remote-side `DEFAULT gen_random_uuid()` clause.
+- `datapai.chat_messages` INSERT has the same issue.
+
+**Impact**: chat history has been silently broken in production — every chat request falls back to an ephemeral session (`session_id: null` in the response) and messages never persist. Errors are caught as `logger.warning("Message persist failed (non-fatal)")` so users never see them. No user has ever had persistent chat history.
+
+**Recommended fix**: same pattern as `_log_notification` — route `save_message` + `create_new_session` + `get_or_create_session` in `agents/stock_chat/history.py` through a direct `framework_db` connection. Should be Phase 1.13 with its own design + test plan.
+
+### Verification
+
+3 successful end-to-end chat requests created 3 notes in Twenty, all correctly linked to donny's stockClient. All 3 test notes deleted after verification. Direct Python shell test of `build_twenty_context_block` covers: donny int-prefix, full UUID, user_id=0, None, unknown int. Sync DAG regression test green.
+
+---
+
 ## 2026-04-11 — Phase 1.10 → Phase 4B (dual-write, Twenty CRM, push notifications, DB-driven refactor)
 
 **Detailed journal**: [docs/phase-journals/2026-04-11-phase-1.10-to-4b.md](docs/phase-journals/2026-04-11-phase-1.10-to-4b.md)
