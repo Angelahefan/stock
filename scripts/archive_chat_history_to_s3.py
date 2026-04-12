@@ -131,7 +131,7 @@ def load_archive_config(conn, domain: str) -> dict:
     safety_days = int(cfg.get("archive_safety_overlap_days", "7"))
     bucket = cfg.get("archive_bucket", "codepais3")
     prefix_key = f"archive_prefix_{domain}"
-    prefix = cfg.get(prefix_key, f"datapai-archive/{domain}/chat_history")
+    prefix = cfg.get(prefix_key, f"{domain}/raw/chat_history")
     enabled = cfg.get("archive_enabled", "true").lower() == "true"
 
     return {

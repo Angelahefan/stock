@@ -26,7 +26,7 @@ What this DAG does (one task, idempotent)
 Tunables (DB-driven, no code change required):
   hot_retention_days         (default 90)
   archive_bucket             (default codepais3)
-  archive_prefix_stock       (default datapai-archive/stock/chat_history)
+  archive_prefix_stock       (default stock/raw/chat_history)
   archive_enabled            (default true)
   archive_safety_overlap_days (default 7 — unused, reserved for future)
 

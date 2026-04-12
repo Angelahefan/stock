@@ -40,7 +40,7 @@ Failing to persist an AI conversation is a **governance violation**, not a recov
              │                                                   ▼
              │                                    ┌──── COLD TIER ────────────────┐
              │                                    │  S3: codepais3 bucket          │
-             │                                    │  datapai-archive/<vertical>/   │
+             │                                    │  <vertical>/raw/   │
              │                                    │    chat_history/year=YYYY/     │
              │                                    │      month=MM/day=DD/          │
              │                                    │        part-*.parquet          │

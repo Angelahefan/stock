@@ -26,7 +26,7 @@
 #   config_type='chat_archive' keys:
 #     hot_retention_days         (default 90)
 #     archive_bucket             (default codepais3)
-#     archive_prefix_stock       (default datapai-archive/stock/chat_history)
+#     archive_prefix_stock       (default stock/raw/chat_history)
 #     archive_enabled            (default true)
 #     archive_safety_overlap_days (default 7)
 #

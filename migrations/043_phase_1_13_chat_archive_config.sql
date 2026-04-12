@@ -29,12 +29,12 @@ VALUES
    'S3 bucket name for chat history cold storage. Existing bucket in ap-southeast-2, EC2 IAM role has access.',
    'phase_1_13_2026-04-12'),
 
-  ('chat_archive', 'archive_prefix_stock', 'datapai-archive/stock/chat_history',
-   'S3 key prefix for stock-vertical chat history. Partitioned by year/month/day under this prefix.',
+  ('chat_archive', 'archive_prefix_stock', 'stock/raw/chat_history',
+   'S3 key prefix for stock-vertical chat history. Convention: s3://{bucket}/{vertical}/raw/{table_name}/year=/month=/day=/',
    'phase_1_13_2026-04-12'),
 
-  ('chat_archive', 'archive_prefix_health', 'datapai-archive/health/chat_history',
-   'S3 key prefix for healthcare-vertical chat history. Reserved for when the healthcare copilot ships.',
+  ('chat_archive', 'archive_prefix_health', 'health/raw/chat_history',
+   'S3 key prefix for healthcare-vertical chat history. Convention: s3://{bucket}/{vertical}/raw/{table_name}/year=/month=/day=/. Reserved for when the healthcare copilot ships.',
    'phase_1_13_2026-04-12'),
 
   ('chat_archive', 'archive_enabled', 'true',
@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS datapai.sys_archive_log (
     domain          TEXT NOT NULL,                  -- 'stock' | 'health' | ...
     source_table    TEXT NOT NULL,                  -- 'chat_messages', 'chat_sessions', etc.
     s3_bucket       TEXT NOT NULL,
-    s3_key_prefix   TEXT NOT NULL,                  -- datapai-archive/<domain>/chat_history/year=YYYY/month=MM/day=DD/
+    s3_key_prefix   TEXT NOT NULL,                  -- <domain>/raw/chat_history/year=YYYY/month=MM/day=DD/
     rows_exported   INTEGER NOT NULL DEFAULT 0,
     rows_deleted    INTEGER NOT NULL DEFAULT 0,
     bytes_uploaded  BIGINT,
