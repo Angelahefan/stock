@@ -15,6 +15,7 @@ from collections import defaultdict
 from typing import Optional
 
 from .db import execute, execute_returning, query
+from .fw_db import fw_execute as _fw_execute
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +85,10 @@ def upsert_user_context(
     prefix = context_key.split("/")[0] if "/" in context_key else "pref"
     context_type = CONTEXT_TYPE_MAP.get(prefix, "preference")
 
-    execute(
+    # Phase 1.13 fix: sys_user_context is an FDW alias on stock_db; writes
+    # through the FDW bypass the remote-side DEFAULT nextval(id) clause.
+    # Route through direct framework_db connection via fw_db.
+    _fw_execute(
         """INSERT INTO datapai.sys_user_context
            (user_id, context_key, context_value, context_type, confidence, source, source_detail, mention_count)
            VALUES (%s, %s, %s, %s, %s, %s, %s, 1)

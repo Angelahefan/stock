@@ -1,6 +1,25 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 # stock_chat/history.py  —  Chat session & message persistence
-# Tables: datapai.chat_sessions, datapai.chat_messages
+# Tables: datapai.chat_sessions, datapai.chat_messages, datapai.user_preferences
+#
+# ── AI GOVERNANCE RULE (Phase 1.13, 2026-04-12) ───────────────────────────────
+# Every AI chat interaction must be persisted for audit, back-tracking, and
+# accountability. No black-box AI at DATAP.AI. A failed persist is NOT
+# non-fatal — it's a loud error + an audit log entry. See the standing rule
+# in ~/.claude/.../memory/feedback_ai_governance_audit.md.
+#
+# ── WRITE PATH ARCHITECTURAL RULE (Phase 1.13, 2026-04-12) ────────────────────
+# For any user-facing table on framework_db (chat_sessions, chat_messages,
+# notification_log, user_devices, sys_user_context, user_preferences, etc.),
+# write paths go through a DIRECT framework_db connection, NOT the stock_db
+# FDW alias. The FDW alias works fine for reads but breaks INSERT DEFAULTs
+# (postgres_fdw sends NULL for columns not in the VALUES list, bypassing
+# remote-side DEFAULT gen_random_uuid() / nextval() / NOW() clauses).
+#
+# READS continue to use the .db pool (stock_db via FDW) because reads via
+# FDW are transparent and fast.
+#
+# Reference fix: send_alerts.py::_get_framework_conn (Phase 4A, 2026-04-11).
 # ═══════════════════════════════════════════════════════════════════════════════
 
 from __future__ import annotations
@@ -10,21 +29,33 @@ import logging
 from typing import Optional
 from uuid import UUID
 
-from .db import execute, execute_returning, query
+from .db import query  # kept for reads via stock_db FDW (fast + transparent)
+from .fw_db import (
+    fw_execute as _fw_execute,
+    fw_execute_returning as _fw_execute_returning,
+    fw_query as _fw_query,
+)
 
 logger = logging.getLogger(__name__)
 
 
 # ── Sessions ──────────────────────────────────────────────────────────────────
+#
+# All session INSERTs go through _fw_* helpers which hit framework_db directly,
+# bypassing the stock_db FDW alias. This fixes the pre-existing DEFAULT-bypass
+# bug that had broken chat history persistence since the FDW aliases were added.
+#
+# The SELECT in get_or_create_session also uses _fw_query for consistency
+# within a single request (avoids read-your-own-write races across the FDW).
 
 def get_or_create_session(user_id: int, ticker: str, exchange: str = "US") -> str:
     """
     Return the most recent active session UUID for (user_id, ticker),
     or create a new one if none exists.
     """
-    rows = query(
+    rows = _fw_query(
         """
-        SELECT id::text FROM datapai.chat_sessions
+        SELECT id::text AS id FROM datapai.chat_sessions
         WHERE user_id = %s AND ticker = %s
         ORDER BY updated_at DESC LIMIT 1
         """,
@@ -33,11 +64,11 @@ def get_or_create_session(user_id: int, ticker: str, exchange: str = "US") -> st
     if rows:
         return rows[0]["id"]
 
-    row = execute_returning(
+    row = _fw_execute_returning(
         """
         INSERT INTO datapai.chat_sessions (user_id, ticker, exchange, title)
         VALUES (%s, %s, %s, %s)
-        RETURNING id::text
+        RETURNING id::text AS id
         """,
         (user_id, ticker.upper(), exchange.upper(), f"{ticker.upper()} AI Analysis Chat"),
     )
@@ -48,11 +79,11 @@ def get_or_create_session(user_id: int, ticker: str, exchange: str = "US") -> st
 
 def create_new_session(user_id: int, ticker: str, exchange: str = "US") -> str:
     """Force-create a fresh session (user clicked 'New chat')."""
-    row = execute_returning(
+    row = _fw_execute_returning(
         """
         INSERT INTO datapai.chat_sessions (user_id, ticker, exchange, title)
         VALUES (%s, %s, %s, %s)
-        RETURNING id::text
+        RETURNING id::text AS id
         """,
         (user_id, ticker.upper(), exchange.upper(), f"{ticker.upper()} AI Analysis Chat"),
     )
@@ -69,11 +100,17 @@ def save_message(
     tokens_used: int | None = None,
     context_sources: list | None = None,
 ) -> None:
-    execute(
+    """Persist a chat message to framework_db.
+
+    Governance rule: a failed save here is NOT non-fatal. Callers should NOT
+    swallow exceptions with `except: logger.warning(...)` — let them bubble up
+    so monitoring + alerts can fire. Silent failure = lost AI audit record.
+    """
+    _fw_execute(
         """
         INSERT INTO datapai.chat_messages
             (session_id, role, content, model_used, tokens_used, context_sources)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s::jsonb)
         """,
         (
             session_id,
@@ -84,8 +121,9 @@ def save_message(
             json.dumps(context_sources or []),
         ),
     )
-    # Touch session updated_at
-    execute(
+    # Touch session updated_at (same direct connection — keeps the two writes
+    # temporally close; no explicit transaction because psycopg2 autocommit is on)
+    _fw_execute(
         "UPDATE datapai.chat_sessions SET updated_at = now() WHERE id = %s",
         (session_id,),
     )
@@ -115,8 +153,9 @@ def get_history(session_id: str, limit: int = 20) -> list[dict]:
 # ── User Preferences (extracted from chat) ───────────────────────────────────
 
 def save_user_preference(user_id: str, pref_key: str, pref_value: str, source_message: str = "") -> None:
-    """Upsert a user preference extracted from chat."""
-    execute(
+    """Upsert a user preference extracted from chat. Routes through direct
+    framework_db connection (user_preferences is an FDW alias on stock_db)."""
+    _fw_execute(
         """
         INSERT INTO datapai.user_preferences (user_id, pref_key, pref_value, source_message, updated_at)
         VALUES (%s, %s, %s, %s, now())

@@ -348,9 +348,15 @@ class ChatRequest(BaseModel):
     ticker:          str
     exchange:        str       = "US"
     message:         str
-    user_id:         int       = 0          # 0 = anonymous fallback
-    session_id:      Optional[str] = None  # None = auto-resolve latest session
-    new_session:     bool      = False     # True = force fresh session
+    user_id:         int       = 0          # 0 = anonymous fallback. Legacy int (from
+                                             # Next.js parseInt(UUID) = 4-digit prefix).
+    # Phase 1.14 (#4, 2026-04-12): the real full UUID, passed from the frontend
+    # so downstream lookups (plan, Twenty CRM, email resolution) can match on
+    # the actual user identity rather than a 4-digit prefix. Optional for
+    # backward compat with older frontend builds.
+    user_uuid:       Optional[str] = None
+    session_id:      Optional[str] = None   # None = auto-resolve latest session
+    new_session:     bool      = False      # True = force fresh session
     lang:            str       = "en"
     # Optional grounding context passed from Next.js (already fetched by frontend)
     ta_signal_md:    Optional[str] = None
@@ -394,7 +400,13 @@ async def stock_chat(req: ChatRequest):
         else:
             session_id = get_or_create_session(req.user_id, ticker, exchange)
     except Exception as e:
-        logger.warning("Session setup failed (using ephemeral): %s", e)
+        # GOVERNANCE rule: session setup failures are loud ERRORs, not warnings.
+        # The ephemeral fallback below still lets the user get an answer, but
+        # without a session_id the chat will NOT be persisted → audit gap.
+        logger.error(
+            "GOVERNANCE: session setup FAILED (chat will be ephemeral, NOT persisted) user_id=%s ticker=%s: %s",
+            req.user_id, ticker, e,
+        )
         session_id = None  # Graceful degradation — still answer, just don't persist
 
     # ── 2. History ────────────────────────────────────────────────────────────
@@ -415,7 +427,16 @@ async def stock_chat(req: ChatRequest):
         lang    = req.lang
 
     # ── 4. System prompt ──────────────────────────────────────────────────────
-    user_id_str = str(req.user_id) if req.user_id else None
+    # Phase 1.14 (#4): prefer the full user_uuid (passed by new frontend
+    # builds) over the legacy parseInt-prefix int. Fall back to the int for
+    # backward compatibility with older Next.js builds.
+    user_id_for_context: str | None = None
+    if req.user_uuid:
+        user_id_for_context = str(req.user_uuid).strip() or None
+    if not user_id_for_context and req.user_id:
+        user_id_for_context = str(req.user_id)
+    user_id_str = user_id_for_context  # preserved name for downstream code
+
     system_prompt = build_system_prompt(
         ticker          = ticker,
         exchange        = exchange,
@@ -444,7 +465,16 @@ async def stock_chat(req: ChatRequest):
         logger.error("LLM call failed for %s: %s", ticker, e)
         raise HTTPException(status_code=502, detail=f"LLM call failed: {e}")
 
-    # ── 7. Persist ────────────────────────────────────────────────────────────
+    # ── 7. Persist (AI governance rule — Phase 1.13, 2026-04-12) ───────────
+    # A failed persist is NOT non-fatal. A user message + AI reply that is
+    # not stored is a lost audit record, and AI governance says we can't
+    # leave black boxes. We still return the reply to the user (they got
+    # their answer), but we log at ERROR level and rely on ops monitoring.
+    #
+    # context_sources is currently an empty list but should be populated
+    # in a future phase with the names of each system-prompt block that
+    # was injected (user_profile, twenty_crm, rag_tinyfish, etc.) so
+    # audits can reproduce what the LLM saw.
     if session_id:
         try:
             save_message(session_id, "user",      req.message, context_sources=[])
@@ -454,11 +484,19 @@ async def stock_chat(req: ChatRequest):
                 extract_user_context_fast(user_id_str, req.message)
                 extract_and_save_preferences(user_id_str, req.message)
         except Exception as e:
-            logger.warning("Message persist failed (non-fatal): %s", e)
+            # ERROR not WARNING — this is a governance violation (lost audit record).
+            # Loud enough to show up in monitoring / journalctl.
+            logger.error(
+                "GOVERNANCE: chat persist FAILED for session=%s user_id=%s ticker=%s: %s",
+                session_id, user_id_str, ticker, e,
+            )
 
     # ── 7b. Log chat to Twenty CRM as a Note on stockClient (Phase 1.12.2) ──
     # Fire-and-forget audit trail. Failures are logged but do NOT affect the
-    # chat response. Never raises.
+    # chat response. Never raises. Note: Twenty write is a secondary audit
+    # surface — the primary is chat_messages above. Twenty note gives human
+    # reviewers a timeline view on the customer record; chat_messages gives
+    # the full history for LLM context recall + training data + compliance.
     if user_id_str:
         try:
             log_chat_to_twenty(
@@ -471,7 +509,7 @@ async def stock_chat(req: ChatRequest):
                 tokens_used=tokens,
             )
         except Exception as e:
-            logger.warning("Twenty chat log failed (non-fatal): %s", e)
+            logger.warning("Twenty chat log failed (non-fatal secondary audit): %s", e)
 
     return {
         "ok":         True,
@@ -525,7 +563,11 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
         else:
             session_id = get_or_create_session(req.user_id, ticker, exchange)
     except Exception as e:
-        logger.warning("Session setup failed (ephemeral): %s", e)
+        # GOVERNANCE: loud ERROR, not warning. Ephemeral chat = audit gap.
+        logger.error(
+            "GOVERNANCE: stream session setup FAILED (chat ephemeral, NOT persisted) user_id=%s ticker=%s: %s",
+            req.user_id, ticker, e,
+        )
         session_id = None
 
     # ── History + profile + system prompt (same as non-streaming) ─────────────
@@ -545,7 +587,13 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
         lang    = req.lang
 
     from .context_builder import build_system_prompt
-    user_id_str = str(req.user_id) if req.user_id else None
+    # Phase 1.14 (#4): prefer full user_uuid over legacy int prefix
+    user_id_for_context: str | None = None
+    if req.user_uuid:
+        user_id_for_context = str(req.user_uuid).strip() or None
+    if not user_id_for_context and req.user_id:
+        user_id_for_context = str(req.user_id)
+    user_id_str = user_id_for_context
     system_prompt = build_system_prompt(
         ticker          = ticker,
         exchange        = exchange,
@@ -717,7 +765,9 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
 
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
-        # Persist after streaming completes
+        # Persist after streaming completes (AI governance rule — Phase 1.13)
+        # Loud ERROR on failure, not "non-fatal warning". See the non-streaming
+        # endpoint above for the full rationale.
         if session_id and full_reply:
             try:
                 save_message(session_id, "user",      req.message,  context_sources=[])
@@ -726,10 +776,14 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
                     extract_user_context_fast(user_id_str, req.message)
                     extract_and_save_preferences(user_id_str, req.message)
             except Exception as e:
-                logger.warning("Persist failed (non-fatal): %s", e)
+                logger.error(
+                    "GOVERNANCE: chat stream persist FAILED for session=%s user_id=%s ticker=%s: %s",
+                    session_id, user_id_str, ticker, e,
+                )
 
         # Log chat to Twenty CRM as a Note on stockClient (Phase 1.12.2)
-        # Fire-and-forget audit trail. Non-fatal on any failure.
+        # Fire-and-forget secondary audit trail. Non-fatal on any failure
+        # because the primary audit record (chat_messages) landed above.
         if user_id_str and full_reply:
             try:
                 est_tokens_for_note = (len(req.message) + len(full_reply)) // 4
@@ -743,7 +797,7 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
                     tokens_used=est_tokens_for_note,
                 )
             except Exception as e:
-                logger.warning("Twenty chat log failed (non-fatal): %s", e)
+                logger.warning("Twenty chat log failed (non-fatal secondary audit): %s", e)
 
         # Record token usage (estimate: ~4 chars per token)
         est_tokens = (len(req.message) + len(full_reply)) // 4
