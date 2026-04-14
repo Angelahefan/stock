@@ -5,13 +5,18 @@ ONE file generates separate DAGs per market, each running independently.
 Market config (schedule, timezone) comes from datapai.market_trading_hours.
 
 Chain per market:
-  refresh_daily → sync_close → fundamental_lite → ta_daily → [ta_weekly, ta_monthly] → screener_metrics
+  refresh_priority → refresh_daily → sync_close → fundamental_lite
+  → ta_daily → [ta_weekly, ta_monthly] → screener_metrics
 
-US/ASX get extra steps: eod_rollup, parallel refresh workers, fundamental, multi_factor.
+refresh_priority: fast pass on demo + watchlist tickers (~20) for early feedback.
+refresh_daily: ALWAYS runs — full universe refresh. Never skipped.
+
+US/ASX get extra steps: fundamental, multi_factor.
 
 Adding a new market = INSERT into market_trading_hours → DAG auto-appears.
 """
 from datetime import datetime, timedelta
+import os
 import pendulum
 from airflow.decorators import dag
 from airflow.timetables.trigger import CronTriggerTimetable
@@ -69,8 +74,15 @@ def _create_eod_dag(market: dict):
         max_active_runs=1,
     )
     def eod_pipeline():
-        # ── Common steps for ALL markets ──────────────────────────────
+        # ── Step 0: Priority tickers (demo + watchlist, fast) ────────
+        refresh_priority = stock_bash_task(
+            f"refresh_priority_{ex_lower}",
+            "run_refresh_priority.sh",
+            args=f"--exchange {exchange}",
+            execution_timeout=timedelta(minutes=5), retries=1,
+        )
 
+        # ── Step 1: Full daily refresh — ALWAYS runs, never skipped ──
         if exchange == "US":
             # US: 3 parallel refresh workers (6,700+ tickers)
             refresh_workers = []
@@ -91,6 +103,7 @@ def _create_eod_dag(market: dict):
                 execution_timeout=timedelta(hours=2), retries=2,
             )
 
+        # ── Step 2+: Post-refresh pipeline ───────────────────────────
         sync_close = stock_bash_task(
             f"sync_close_to_intraday_{ex_lower}", "run_sync_close_to_intraday.sh",
             args=f"--exchange {exchange}", execution_timeout=timedelta(minutes=5),
@@ -116,10 +129,11 @@ def _create_eod_dag(market: dict):
             args=f"--exchange {exchange}", execution_timeout=timedelta(minutes=10),
         )
 
-        # Common chain
-        refresh_step >> sync_close >> fundamental_lite >> ta_daily >> [ta_weekly, ta_monthly] >> screener_metrics
+        # ── DAG wiring: sequential, no branching ─────────────────────
+        # Priority first (fast), then full refresh (always), then downstream
+        refresh_priority >> refresh_step >> sync_close >> fundamental_lite >> ta_daily >> [ta_weekly, ta_monthly] >> screener_metrics
 
-        # ── Extra steps for US/ASX (full pipeline) ────────────────────
+        # ── Extra steps for US/ASX (full pipeline) ───────────────────
         if exchange in _FULL_PIPELINE:
             fundamental = stock_bash_task(
                 f"compute_fundamental_{ex_lower}", "run_compute_fundamental.sh",
