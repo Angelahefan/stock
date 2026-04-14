@@ -6,5 +6,8 @@
 yfinance
 feedparser
 
+# AI Observability
+openlit>=1.0.0
+
 # Already in platform but listed for clarity
 # fastapi, uvicorn, psycopg2-binary, pandas, requests — from platform
