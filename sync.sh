@@ -1,6 +1,6 @@
 #!/bin/bash
 # Deploy datapai-stock-be to EC2
-rsync -avz --delete --progress \
+rsync -avz --progress \
   -e "ssh -i ~/.ssh/Linux-CodeCambat.pem" \
   --exclude .claude/ --exclude .git/ --exclude __pycache__/ --exclude .env \
   ~/git/datapai-stock-be/ \

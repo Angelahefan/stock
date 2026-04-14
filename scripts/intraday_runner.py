@@ -358,10 +358,34 @@ def run(exchanges: list[str]):
     logger.info("── Intraday Runner stopped ──")
 
 
+def _exchanges_for_group(group: str) -> list[str]:
+    """Query market_trading_hours for exchanges in a runner_group."""
+    try:
+        conn = psycopg2.connect(
+            host="localhost", port=int(os.environ.get("DATAPAI_PG_PORT", 5434)),
+            dbname="postgres", user="postgres", password="postgres",
+            options="-c search_path=datapai,public", connect_timeout=5,
+        )
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT exchange FROM datapai.market_trading_hours "
+            "WHERE runner_group = %s AND is_active = TRUE ORDER BY exchange",
+            (group.lower(),),
+        )
+        exchanges = [r[0] for r in cur.fetchall()]
+        cur.close()
+        conn.close()
+        return exchanges
+    except Exception as e:
+        logger.warning("Failed to query runner_group=%s: %s", group, e)
+        return []
+
+
 def main():
     ap = argparse.ArgumentParser(description="Self-throttling intraday data collector")
-    ap.add_argument("--exchange", required=True,
-                    help="Exchange code or 'all' for all markets")
+    grp = ap.add_mutually_exclusive_group(required=True)
+    grp.add_argument("--exchange", help="Exchange code, comma-separated, or 'all'")
+    grp.add_argument("--group", help="Runner group from market_trading_hours (asia, west)")
     args = ap.parse_args()
 
     try:
@@ -370,7 +394,13 @@ def main():
     except ImportError:
         pass
 
-    if args.exchange.upper() == "ALL":
+    if args.group:
+        exchanges = _exchanges_for_group(args.group)
+        if not exchanges:
+            logger.error("No active exchanges found for group '%s'", args.group)
+            sys.exit(1)
+        logger.info("Group '%s' → exchanges: %s", args.group, exchanges)
+    elif args.exchange.upper() == "ALL":
         exchanges = list(MARKET_HOURS.keys())
     else:
         exchanges = [e.strip().upper() for e in args.exchange.split(",")]
