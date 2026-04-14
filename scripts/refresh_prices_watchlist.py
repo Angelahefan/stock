@@ -99,15 +99,16 @@ def refresh_prices(tickers: list, exchange: str):
                         # Store ASX tickers with .AX suffix to match existing convention
                         store_ticker = yf_ticker if exchange == "ASX" else db_ticker
                         cur.execute(
-                            """INSERT INTO datapai.prices (ticker, trade_date, close, volume)
-                               VALUES (%s, %s, %s, %s)
-                               ON CONFLICT (ticker, trade_date) DO UPDATE SET close=%s, volume=%s""",
-                            (store_ticker, date_str, close, vol, close, vol),
+                            """INSERT INTO datapai.prices (ticker, trade_date, exchange, close, volume)
+                               VALUES (%s, %s, %s, %s, %s)
+                               ON CONFLICT (ticker, trade_date, exchange) DO UPDATE SET close=%s, volume=%s""",
+                            (store_ticker, date_str, exchange, close, vol, close, vol),
                         )
                         updated += 1
 
                 except Exception as e:
                     logger.warning("Failed to process %s: %s", yf_ticker, str(e)[:200])
+                    conn.rollback()
 
     logger.info("Upserted %d price rows for %s exchange", updated, exchange)
 
