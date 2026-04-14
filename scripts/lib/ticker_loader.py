@@ -34,8 +34,8 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-_CACHE_DIR  = Path(__file__).parent.parent / "cache"
-_CACHE_DIR.mkdir(exist_ok=True)
+_CACHE_DIR  = Path(os.environ.get("DATAPAI_TICKER_CACHE", "/tmp/datapai_ticker_cache"))
+_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 _US_CACHE   = _CACHE_DIR / "us_tickers.json"
 _ASX_CACHE  = _CACHE_DIR / "asx_tickers.json"
