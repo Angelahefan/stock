@@ -64,13 +64,8 @@ YF_INTERVAL = "5m"  # 5-minute bars
 
 
 def get_conn():
-    return psycopg2.connect(
-        host=os.environ.get("DATAPAI_PG_HOST", os.environ.get("PGHOST", "localhost")),
-        port=int(os.environ.get("DATAPAI_PG_PORT", os.environ.get("PGPORT", "5434"))),
-        dbname="postgres",
-        user=os.environ.get("PGUSER", os.environ.get("DATAPAI_PG_USER", "postgres")),
-        password=os.environ.get("PGPASSWORD", os.environ.get("DATAPAI_PG_PASSWORD", "postgres")),
-    )
+    from scripts.lib.db_helpers import get_conn as _get_conn
+    return _get_conn()
 
 
 # Grace period after official close.
@@ -361,11 +356,8 @@ def run(exchanges: list[str]):
 def _exchanges_for_group(group: str) -> list[str]:
     """Query market_trading_hours for exchanges in a runner_group."""
     try:
-        conn = psycopg2.connect(
-            host="localhost", port=int(os.environ.get("DATAPAI_PG_PORT", 5434)),
-            dbname="postgres", user="postgres", password="postgres",
-            options="-c search_path=datapai,public", connect_timeout=5,
-        )
+        from scripts.lib.db_helpers import get_conn as _get_conn
+        conn = _get_conn()
         cur = conn.cursor()
         cur.execute(
             "SELECT exchange FROM datapai.market_trading_hours "

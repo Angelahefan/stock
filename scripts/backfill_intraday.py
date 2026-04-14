@@ -40,13 +40,8 @@ INTERVAL = "15m"
 
 
 def get_conn():
-    return psycopg2.connect(
-        host=os.environ.get("DATAPAI_PG_HOST", os.environ.get("PGHOST", "localhost")),
-        port=int(os.environ.get("DATAPAI_PG_PORT", os.environ.get("PGPORT", "5434"))),
-        dbname="postgres",
-        user=os.environ.get("PGUSER", os.environ.get("DATAPAI_PG_USER", "postgres")),
-        password=os.environ.get("PGPASSWORD", os.environ.get("DATAPAI_PG_PASSWORD", "postgres")),
-    )
+    from scripts.lib.db_helpers import get_conn as _get_conn
+    return _get_conn()
 
 
 def load_tickers(conn, exchange: str) -> list[tuple[str, str, str]]:

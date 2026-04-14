@@ -27,21 +27,12 @@ from lib.log_setup import setup_logging
 
 logger = setup_logging("compute_portfolio_snapshots")
 
-PG_HOST     = os.getenv("DATAPAI_PG_HOST",     "localhost")
-PG_PORT     = int(os.getenv("DATAPAI_PG_PORT", "5432"))
-PG_DB       = os.getenv("DATAPAI_PG_DB",       "postgres")
-PG_USER     = os.getenv("DATAPAI_PG_USER",     "postgres")
-PG_PASSWORD = os.getenv("DATAPAI_PG_PASSWORD", "postgres")
-
 BENCHMARK_TICKER = "^GSPC"
 
 
 def get_conn():
-    return psycopg2.connect(
-        host=PG_HOST, port=PG_PORT, dbname=PG_DB,
-        user=PG_USER, password=PG_PASSWORD,
-        options="-c search_path=datapai,public",
-    )
+    from scripts.lib.db_helpers import get_conn as _get_conn
+    return _get_conn()
 
 
 def fetch_users_with_holdings(conn) -> list[str]:

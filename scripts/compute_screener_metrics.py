@@ -39,15 +39,9 @@ logger = logging.getLogger(__name__)
 
 
 def get_conn():
-    """Get Postgres connection using standard env vars."""
-    import os
-    return psycopg2.connect(
-        host=os.getenv("PGHOST", "localhost"),
-        port=int(os.getenv("PGPORT", "5432")),
-        dbname=os.getenv("PGDATABASE", "postgres"),
-        user=os.getenv("PGUSER", "postgres"),
-        password=os.getenv("PGPASSWORD", ""),
-    )
+    """Get Postgres connection using centralized db_helpers."""
+    from scripts.lib.db_helpers import get_conn as _get_conn
+    return _get_conn()
 
 
 # ── TA helper functions ───────────────────────────────────────────────────────

@@ -14,15 +14,11 @@ from psycopg2.extras import execute_values
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 MODEL = "gemini-2.5-flash"
-PG_HOST = os.getenv("DATAPAI_PG_HOST", "localhost")
-PG_PORT = int(os.getenv("DATAPAI_PG_PORT", "5434"))
-PG_DB = os.getenv("DATAPAI_PG_DB", "postgres")
-PG_USER = os.getenv("DATAPAI_PG_USER", "postgres")
-PG_PASS = os.getenv("DATAPAI_PG_PASSWORD", "postgres")
 
 
 def get_conn():
-    return psycopg2.connect(host=PG_HOST, port=PG_PORT, dbname=PG_DB, user=PG_USER, password=PG_PASS)
+    from scripts.lib.db_helpers import get_conn as _get_conn
+    return _get_conn()
 
 
 def translate_batch(names):

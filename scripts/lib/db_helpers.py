@@ -37,15 +37,25 @@ _PG_PASSWORD = os.getenv("DATAPAI_PG_PASSWORD", "postgres")
 
 def get_conn() -> psycopg2.extensions.connection:
     """Return a new psycopg2 connection to the datapai database."""
-    return psycopg2.connect(
-        host=_PG_HOST,
-        port=_PG_PORT,
-        dbname=_PG_DB,
-        user=_PG_USER,
-        password=_PG_PASSWORD,
-        options="-c search_path=datapai,public",
-        connect_timeout=10,
-    )
+    # Airflow sets PGPORT=5432/PGHOST for its own DB. psycopg2 libpq picks
+    # these up and ignores our explicit port= kwarg. Unset them temporarily.
+    saved = {}
+    for key in ("PGPORT", "PGHOST", "PGDATABASE", "PGUSER", "PGPASSWORD"):
+        if key in os.environ:
+            saved[key] = os.environ.pop(key)
+    try:
+        conn = psycopg2.connect(
+            host=_PG_HOST,
+            port=_PG_PORT,
+            dbname=_PG_DB,
+            user=_PG_USER,
+            password=_PG_PASSWORD,
+            options="-c search_path=datapai,public",
+            connect_timeout=10,
+        )
+    finally:
+        os.environ.update(saved)
+    return conn
 
 
 # ── Per-market intraday table mapping ────────────────────────────────────────

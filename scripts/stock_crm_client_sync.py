@@ -86,14 +86,8 @@ TWENTY_ENUM_SOURCE_FIELDS = [
 
 # ── Postgres helpers ─────────────────────────────────────────────────────────
 def get_pg_conn():
-    return psycopg2.connect(
-        host=os.getenv("DATAPAI_PG_HOST", "localhost"),
-        port=int(os.getenv("DATAPAI_PG_PORT", "5434")),
-        dbname=os.getenv("DATAPAI_PG_DB", "postgres"),
-        user=os.getenv("DATAPAI_PG_USER", "postgres"),
-        password=os.getenv("DATAPAI_PG_PASSWORD", "postgres"),
-        connect_timeout=30,
-    )
+    from scripts.lib.db_helpers import get_conn as _get_conn
+    return _get_conn()
 
 
 def table_exists(conn, schema: str, table: str) -> bool:

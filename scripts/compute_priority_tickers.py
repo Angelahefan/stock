@@ -26,21 +26,13 @@ import sys
 import time
 from typing import List, Tuple
 
-import psycopg2
-import psycopg2.extras
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
 
 def get_conn():
-    return psycopg2.connect(
-        host=os.getenv("PGHOST", "localhost"),
-        port=int(os.getenv("PGPORT", "5432")),
-        dbname=os.getenv("PGDATABASE", "postgres"),
-        user=os.getenv("PGUSER", "postgres"),
-        password=os.getenv("PGPASSWORD", ""),
-    )
+    from scripts.lib.db_helpers import get_conn as _get_conn
+    return _get_conn()
 
 
 # ── Priority bucket queries ──────────────────────────────────────────────────

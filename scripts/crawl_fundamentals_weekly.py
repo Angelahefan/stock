@@ -292,16 +292,9 @@ def run(exchange: str, threads: int = 10, skip_days: int = 6, dry_run: bool = Fa
         logger.info("No tickers to crawl (all updated within %d days)", skip_days)
         return
 
-    import psycopg2
     conn = None
     if not dry_run:
-        conn = psycopg2.connect(
-            host=os.environ.get("DATAPAI_PG_HOST", os.environ.get("PGHOST", "localhost")),
-            port=int(os.environ.get("DATAPAI_PG_PORT", os.environ.get("PGPORT", "5434"))),
-            dbname="postgres",
-            user=os.environ.get("PGUSER", os.environ.get("DATAPAI_PG_USER", "postgres")),
-            password=os.environ.get("PGPASSWORD", os.environ.get("DATAPAI_PG_PASSWORD", "postgres")),
-        )
+        conn = get_conn()
 
     total_ok = 0
     total_fail = 0
