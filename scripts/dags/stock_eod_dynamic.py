@@ -82,6 +82,14 @@ def _create_eod_dag(market: dict):
             execution_timeout=timedelta(minutes=5), retries=1,
         )
 
+        # ── Step 0b: Early sync — push priority close prices into intraday
+        #    so demo/watchlist users see updated data immediately,
+        #    before the full refresh completes ─────────────────────────
+        sync_close_early = stock_bash_task(
+            f"sync_close_early_{ex_lower}", "run_sync_close_to_intraday.sh",
+            args=f"--exchange {exchange}", execution_timeout=timedelta(minutes=5),
+        )
+
         # ── Step 1: Full daily refresh — ALWAYS runs, never skipped ──
         if exchange == "US":
             # US: 3 parallel refresh workers (6,700+ tickers)
@@ -130,8 +138,9 @@ def _create_eod_dag(market: dict):
         )
 
         # ── DAG wiring: sequential, no branching ─────────────────────
-        # Priority first (fast), then full refresh (always), then downstream
-        refresh_priority >> refresh_step >> sync_close >> fundamental_lite >> ta_daily >> [ta_weekly, ta_monthly] >> screener_metrics
+        # Priority first (fast) → early sync (demo/watchlist into intraday)
+        # → full refresh (always, all tickers) → full sync → downstream
+        refresh_priority >> sync_close_early >> refresh_step >> sync_close >> fundamental_lite >> ta_daily >> [ta_weekly, ta_monthly] >> screener_metrics
 
         # ── Extra steps for US/ASX (full pipeline) ───────────────────
         if exchange in _FULL_PIPELINE:
