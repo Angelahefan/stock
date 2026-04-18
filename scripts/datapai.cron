@@ -1,0 +1,61 @@
+# /etc/cron.d/datapai
+# ─────────────────────────────────────────────────────────────────────────────
+# datap.ai OHLCV ETL cron schedule
+# Install:  sudo cp scripts/datapai.cron /etc/cron.d/datapai
+#           sudo chmod 644 /etc/cron.d/datapai
+#
+# Log strategy (NO duplication):
+#   • Each script uses RotatingFileHandler → writes to:
+#       /var/log/datapai/<script_name>.log  (10MB, 5 backups)
+#   • Cron stderr is redirected to a SEPARATE .cron.log file so the
+#     two streams never collide.
+#
+# Live log files:
+#   /var/log/datapai/refresh_ohlcv_daily.log      ← script rotating handler
+#   /var/log/datapai/refresh_ohlcv_asx.log        ← script rotating handler
+#   /var/log/datapai/refresh_ohlcv_intraday.log   ← script rotating handler
+#   /var/log/datapai/bootstrap_ohlcv.log          ← script rotating handler
+#   /var/log/datapai/*.cron.log                   ← cron stderr (rare errors)
+#
+# To watch live:
+#   tail -f /var/log/datapai/refresh_ohlcv_daily.log
+#
+# Requires: python3 at /usr/bin/python3  |  app root at /app
+# ─────────────────────────────────────────────────────────────────────────────
+
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+PYTHONPATH=/app
+
+# ── US Daily OHLCV ──────────────────────────────────────────────────────────
+# After US market closes 4:00 PM ET = 20:00 UTC
+# Run at 23:15 UTC (buffer for Yahoo Finance data availability)
+# Script writes to /var/log/datapai/refresh_ohlcv_daily.log via RotatingFileHandler
+15 23 * * 1-5   root  cd /app && /usr/bin/python3 scripts/refresh_ohlcv_daily.py 2>/var/log/datapai/ohlcv_daily.cron.log
+
+# ── ASX Daily OHLCV ─────────────────────────────────────────────────────────
+# After ASX market closes 4:00 PM AEDT = 06:00 UTC
+# Run at 06:15 UTC
+15 6 * * 1-5    root  cd /app && /usr/bin/python3 scripts/refresh_ohlcv_asx.py 2>/var/log/datapai/ohlcv_asx.cron.log
+
+# ── US Intraday 30m (Polygon) ────────────────────────────────────────────────
+# US market hours: 09:30–16:00 ET = 13:30–20:00 UTC (Mon–Fri)
+*/30 13-20 * * 1-5  root  cd /app && /usr/bin/python3 scripts/refresh_ohlcv_intraday.py --exchange US 2>/var/log/datapai/ohlcv_intraday.cron.log
+
+# ── ASX Intraday 30m (yfinance) ──────────────────────────────────────────────
+# ASX market hours: 10:00 AM–4:00 PM AEDT = 23:00–06:00 UTC
+*/30 23 * * 0-4     root  cd /app && /usr/bin/python3 scripts/refresh_ohlcv_intraday.py --exchange ASX 2>/var/log/datapai/ohlcv_intraday.cron.log
+*/30 0-6 * * 1-5    root  cd /app && /usr/bin/python3 scripts/refresh_ohlcv_intraday.py --exchange ASX 2>/var/log/datapai/ohlcv_intraday.cron.log
+
+# ── S3 Raw Parquet sync (after US OHLCV refresh) ─────────────────────────────
+# Runs at 23:30 UTC (15 min after refresh_ohlcv_daily.py finishes at 23:15)
+# Syncs last 3 days of prices + intraday to s3://codepais3/stock/raw/
+30 23 * * 1-5   root  cd /app && /usr/bin/python3 scripts/sync_postgres_to_s3_daily.py --days 3 2>/var/log/datapai/sync_s3_daily.cron.log
+
+# ── Snowflake Iceberg delta (after S3 raw sync) ───────────────────────────────
+# Runs at 23:45 UTC (15 min after S3 raw sync completes)
+# Reloads the touched S3 partitions into Snowflake managed Iceberg (bronze layer)
+45 23 * * 1-5   root  cd /app && /usr/bin/python3 scripts/sync_snowflake_iceberg.py --mode delta --days 3 2>/var/log/datapai/sync_snowflake.cron.log
+
+# ── Log directory setup (run once manually) ──────────────────────────────────
+# sudo mkdir -p /var/log/datapai && sudo chmod 755 /var/log/datapai
