@@ -200,19 +200,16 @@ app = FastAPI(
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    """Initialise AI observability (OpenLIT)."""
-    try:
-        import openlit
-        openlit.init(
-            otlp_endpoint=os.environ.get("OPENLIT_OTLP_ENDPOINT", "http://127.0.0.1:4318"),
-            application_name="datapai-stock",
-            environment=os.environ.get("ENVIRONMENT", "production"),
-        )
-        logger.info("OpenLIT AI observability initialised")
-    except ImportError:
-        logger.warning("openlit not installed — AI observability disabled")
-    except Exception as exc:
-        logger.warning("OpenLIT init failed: %s — AI observability disabled", exc)
+    """Initialise AI observability via the platform-be governance primitive.
+
+    Configuration (endpoint, environment, enabled flag, instrumentor filter)
+    can be driven from datapai.sys_common_config using
+    config_type='openlit' and config_key='openlit_datapai-stock_<attr>'.
+    Env vars (OPENLIT_OTLP_ENDPOINT, ENVIRONMENT, OPENLIT_ENABLED) are the
+    fallback when no DB row is present.
+    """
+    from agents.observability import init_openlit
+    init_openlit(app_name="datapai-stock")
 
 app.add_middleware(
     CORSMiddleware,
