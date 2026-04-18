@@ -505,6 +505,88 @@ async def run_debate_consensus(
     except Exception as exc:
         logger.warning("Failed to log consensus debate: %s", exc)
 
+    # ── Platform governance: capture one AgentRun per agent-turn + a summary ──
+    # Additive integration with platform-be/agents/agent_audit — feeds the
+    # platform's canonical datapai.sys_agent_runs table. No change to stock
+    # debate logic; failures log and continue.
+    try:
+        import uuid
+        import psycopg2
+        from agents.agent_audit import AgentRun, AgentRunStore
+
+        _conn = psycopg2.connect(
+            host=os.environ.get("AUTH_DB_HOST", "localhost"),
+            port=int(os.environ.get("AUTH_DB_PORT", "5433")),
+            dbname=os.environ.get("AUTH_DB_NAME", "datapai_auth_db"),
+            user=os.environ.get("AUTH_DB_USER", "auth_service"),
+            password=os.environ.get("AUTH_DB_PASSWORD", ""),
+            connect_timeout=5,
+        )
+        try:
+            _store = AgentRunStore(conn=_conn)
+            debate_run_id = uuid.uuid4().hex[:16]
+            base_question = {
+                "ticker": ticker, "exchange": exchange,
+                "regime": macro_view, "signal_count": len(signals),
+            }
+
+            # Map stock debate agent-key to the sys_agent_roles.role_key
+            _ROLE_KEY = {
+                "TECHNICAL":   "stock.technical",
+                "FUNDAMENTAL": "stock.fundamental",
+                "SENTIMENT":   "stock.sentiment",
+                "MACRO":       "stock.macro",
+            }
+
+            # one record per agent-turn (draft scores)
+            for agent_key, score in draft_scores.items():
+                _store.save(AgentRun(
+                    run_id=debate_run_id,
+                    agent_name=f"stock_{agent_key.lower()}",
+                    domain="stock",
+                    role_key=_ROLE_KEY.get(agent_key),  # resolves to agent_role_id FK
+                    question={**base_question, "phase": "draft", "agent_role": agent_key},
+                    result={
+                        "score": score,
+                        "revised_score": revised_scores.get(agent_key, score),
+                        "reasoning": draft_reasoning.get(agent_key, "")[:500],
+                    },
+                    model_used=MODEL,
+                    tags=["debate", "stock_synthesis", f"regime:{macro_view}",
+                          f"phase:draft", f"agent:{agent_key}"],
+                    metadata={"challenge_pairs": len(challenges)},
+                ))
+
+            # summary record for the whole debate (role = stock.synthesis)
+            _store.save(AgentRun(
+                run_id=debate_run_id,
+                agent_name="stock_synthesis_debate",
+                domain="stock",
+                role_key="stock.synthesis",
+                question={**base_question, "phase": "summary"},
+                result={
+                    "direction": direction.value,
+                    "confidence": confidence,
+                    "conviction": conviction,
+                    "consensus_score": consensus.consensus_score,
+                    "conflict_level": consensus.conflict_level,
+                    "thesis": thesis,
+                    "signals_aligned": signals_aligned,
+                    "risk_score": risk.risk_score,
+                },
+                tags=["debate", "stock_synthesis", f"regime:{macro_view}",
+                      f"direction:{direction.value}"],
+                metadata={
+                    "debate_rounds": len(challenges) + 1,
+                    "bull_agents": bull_agents,
+                    "bear_agents": bear_agents,
+                },
+            ))
+        finally:
+            _conn.close()
+    except Exception as exc:
+        logger.warning("Failed to write platform agent_audit records: %s", exc)
+
     return DebateResult(
         synthesis=synthesis,
         consensus=consensus,
