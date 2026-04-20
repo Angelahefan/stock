@@ -620,6 +620,31 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
         # Send session_id immediately so frontend can store it
         yield f"data: {json.dumps({'type': 'session', 'session_id': session_id, 'ticker': ticker})}\n\n"
 
+        # ── AI governance guardrail (pre-call gate) ─────────────────────────
+        # Runs policy-as-data check against datapai.dim_ai_control (213 rules
+        # / 16 frameworks). On BLOCK/ESCALATE, streams a cited refusal and a
+        # structured governance event so the UI can show APRA/ASIC/OWASP
+        # citations live. Fail-open if module unavailable (availability > demo).
+        from .guardrail_bridge import run_gate_sync, governance_sse_event, footer_markdown
+        _gate = run_gate_sync(
+            message=req.message,
+            metadata={"domain": "stock", "ticker": ticker, "exchange": exchange, "user_id": req.user_id},
+        )
+        if _gate and _gate["verdict"] in ("block", "escalate"):
+            refusal = _gate["refusal"] or "I can't help with this request under our governance policy."
+            # Stream the refusal as normal chunks so existing UIs render it.
+            yield f"data: {json.dumps({'type': 'chunk', 'text': refusal})}\n\n"
+            # Structured footer event — new UI can render as a sidebar/badge.
+            gov_evt = governance_sse_event(_gate)
+            if gov_evt:
+                yield gov_evt
+            # Plain-markdown footer for legacy UIs that only know 'chunk'.
+            md = footer_markdown(_gate)
+            if md:
+                yield f"data: {json.dumps({'type': 'chunk', 'text': md})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'blocked': True})}\n\n"
+            return
+
         full_reply = ""
         model_used = _GOOGLE_MODEL
 
@@ -762,6 +787,17 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
             logger.error("Gemini streaming failed for %s: %s", ticker, e)
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
             return
+
+        # Governance footer — show rules checked even when the turn was allowed.
+        # This is the "policy-as-data" demo signal: buyers see APRA/ASIC/OWASP
+        # cited live in their own session.
+        if _gate:
+            gov_evt = governance_sse_event(_gate)
+            if gov_evt:
+                yield gov_evt
+            md = footer_markdown(_gate)
+            if md:
+                yield f"data: {json.dumps({'type': 'chunk', 'text': md})}\n\n"
 
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
