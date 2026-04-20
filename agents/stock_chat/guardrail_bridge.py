@@ -120,5 +120,5 @@ def footer_markdown(gate_result: Optional[dict]) -> str:
             lines.append(f"  • `{c['control_id']}` — {nm}  _({c['framework_name']})_")
         if FOOTER_MODE == "summary" and len(cites) > 3:
             lines.append(f"  • …and {len(cites) - 3} more")
-    lines.append("_Source: datapai · 213 rules · 16 frameworks (APRA, ASIC, OAIC, AU 6 Principles, NSW AIAF, OWASP Agentic Top 10, NIST, ISO 42001, …)_")
+    lines.append("_Source: datapai · 213 AI governance controls · 16 regulatory & industry frameworks (APRA CPS 230, ASIC REP 798, OAIC Privacy APPs, AU 6 Principles, NSW AIAF, OWASP Agentic Top 10, NIST AI RMF, ISO 42001, …)_")
     return "\n".join(lines)
