@@ -91,17 +91,26 @@ def governance_sse_event(gate_result: Optional[dict]) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
 
+_STATUS_LABEL = {
+    "allow":                 "Compliant",
+    "allow_with_conditions": "Compliant",
+    "block":                 "Blocked",
+    "escalate":              "Needs human review",
+}
+
+
 def footer_markdown(gate_result: Optional[dict]) -> str:
-    """Human-readable footer text for chat UIs that don't render the
-    structured event. Empty string when hidden."""
+    """Human-readable footer for chat UIs that don't render the structured
+    governance event. Tuned for B2B demo: leads with AU regulatory coverage,
+    hides internal mechanics (risk tier, classification, conditions)."""
     if not gate_result or FOOTER_MODE == "off":
         return ""
     cites = gate_result["citations"]
+    status = _STATUS_LABEL.get(gate_result["verdict"], gate_result["verdict"])
     lines = [
         "",
         "───",
-        f"🛡 **Governance check** — `{gate_result['verdict']}` "
-        f"(risk: {gate_result['risk_tier']}, class: {gate_result['classification']})",
+        f"🛡 **AI governance** — {status}",
     ]
     if cites:
         lines.append(f"Rules cited ({len(cites)}):")
@@ -111,8 +120,5 @@ def footer_markdown(gate_result: Optional[dict]) -> str:
             lines.append(f"  • `{c['control_id']}` — {nm}  _({c['framework_name']})_")
         if FOOTER_MODE == "summary" and len(cites) > 3:
             lines.append(f"  • …and {len(cites) - 3} more")
-    conds = gate_result.get("conditions") or []
-    if conds:
-        lines.append(f"Conditions: {', '.join(conds)}")
-    lines.append("_Source: `datapai.dim_ai_control` · 213 rules · 16 frameworks · v2026-04-20_")
+    lines.append("_Source: datapai · 213 rules · 16 frameworks (APRA, ASIC, OAIC, AU 6 Principles, NSW AIAF, OWASP Agentic Top 10, NIST, ISO 42001, …)_")
     return "\n".join(lines)
