@@ -14,15 +14,11 @@ close); run it as background audit later if needed.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
 import time
 from typing import Optional
-
-import psycopg2
-from psycopg2.extras import Json
 
 log = logging.getLogger(__name__)
 
@@ -84,19 +80,9 @@ def run_gate_sync(message: str, metadata: dict) -> Optional[dict]:
 
 
 # ─── Audit persistence ────────────────────────────────────────────────────
-# Write-once insert to datapai.fct_ai_guardrail_decision in framework_db.
-# Always fire-and-forget-style (fail-open) — a DB hiccup must never block a
-# chat turn, but a loud ERROR log lets ops catch persistent write failures.
-
-def _framework_db_conn():
-    return psycopg2.connect(
-        host=os.environ.get("FRAMEWORK_DB_HOST", "localhost"),
-        port=int(os.environ.get("FRAMEWORK_DB_PORT", "5433")),
-        user=os.environ.get("FRAMEWORK_DB_USER", "postgres"),
-        password=os.environ.get("FRAMEWORK_DB_PASSWORD", "postgres"),
-        dbname=os.environ.get("FRAMEWORK_DB_NAME", "datapai_auth_db"),
-    )
-
+# Delegates to the shared helper in agents.ai_governance_guardrail.persistence
+# so the same write-once INSERT path is used by both in-process callers
+# (stock_chat) and HTTP callers (governance_api for MCP/Control-M/etc.).
 
 def persist_decision(
     gate_result: Optional[dict],
@@ -107,66 +93,18 @@ def persist_decision(
     user_id: Optional[str],
 ) -> None:
     """Insert one row into datapai.fct_ai_guardrail_decision. Never raises."""
-    if not gate_result:
-        return
     try:
-        prompt_bytes = user_prompt.encode("utf-8", errors="replace")
-        prompt_sha = hashlib.sha256(prompt_bytes).hexdigest()
-        preview = user_prompt[:200]
-
-        cited_nks = [c["control_nk"] for c in gate_result.get("citations", [])]
-        cited_fws = sorted({c["framework_code"] for c in gate_result.get("citations", [])})
-
-        gate_model_hint = os.environ.get("LLM_PRIMARY_PROVIDER", "").lower() or None
-
-        with _framework_db_conn() as pg, pg.cursor() as c:
-            c.execute(
-                """
-                INSERT INTO datapai.fct_ai_guardrail_decision (
-                    session_id, user_id, domain, ticker, exchange,
-                    user_prompt_sha256, user_prompt_length, user_prompt_preview,
-                    verdict, blocked, risk_tier, classification, conditions,
-                    cited_control_nks, cited_frameworks, cited_count,
-                    reason, gate_latency_ms, gate_model_hint, raw_gate_json
-                ) VALUES (
-                    %s, %s, %s, %s, %s,
-                    %s, %s, %s,
-                    %s, %s, %s, %s, %s,
-                    %s, %s, %s,
-                    %s, %s, %s, %s
-                )
-                """,
-                (
-                    session_id,
-                    str(user_id) if user_id is not None else None,
-                    metadata.get("domain", "unknown"),
-                    metadata.get("ticker"),
-                    metadata.get("exchange"),
-                    prompt_sha,
-                    len(user_prompt),
-                    preview,
-                    gate_result["verdict"],
-                    gate_result["verdict"] in ("block", "escalate"),
-                    gate_result["risk_tier"],
-                    gate_result["classification"],
-                    Json(gate_result.get("conditions") or []),
-                    Json(cited_nks),
-                    Json(cited_fws),
-                    len(cited_nks),
-                    None,  # reason (gate returns in raw_gate_json; skip duplicating)
-                    gate_result.get("gate_latency_ms"),
-                    gate_model_hint,
-                    Json(gate_result),
-                ),
-            )
+        from agents.ai_governance_guardrail.persistence import persist_gate_decision
     except Exception as e:
-        # GOVERNANCE: loud ERROR — missing audit row is an AU FS DD risk.
-        log.error(
-            "GOVERNANCE: fct_ai_guardrail_decision persist FAILED "
-            "session=%s user=%s domain=%s verdict=%s err=%s",
-            session_id, user_id, metadata.get("domain"),
-            (gate_result or {}).get("verdict"), e,
-        )
+        log.warning("governance persistence unavailable: %s", e)
+        return
+    persist_gate_decision(
+        gate_result,
+        user_prompt=user_prompt,
+        metadata=metadata,
+        session_id=session_id,
+        user_id=user_id,
+    )
 
 
 def governance_sse_event(gate_result: Optional[dict]) -> str:
