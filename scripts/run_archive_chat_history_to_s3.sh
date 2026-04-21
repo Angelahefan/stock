@@ -44,4 +44,18 @@ if [[ -z "$PLATFORM_SCRIPT" ]]; then
     exit 2
 fi
 
-exec bash "$PLATFORM_SCRIPT" "$@"
+# Default archive-name = stock_chat (unless caller overrides)
+ARGS=("$@")
+HAS_NAME=0
+for a in "${ARGS[@]}"; do
+    [[ "$a" == --archive-name* ]] && HAS_NAME=1
+done
+if [[ $HAS_NAME -eq 0 ]]; then
+    ARGS=(--archive-name stock_chat "${ARGS[@]}")
+fi
+
+# The platform script forwards to archive_table_to_s3.py, which expects
+# --archive-name. Skip the chat-shim layer by calling the generic script
+# directly so our --archive-name override isn't double-wrapped.
+PLATFORM_DIR="$(dirname "$PLATFORM_SCRIPT")"
+exec python3 "$PLATFORM_DIR/archive_table_to_s3.py" "${ARGS[@]}"
