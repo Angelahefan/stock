@@ -5,16 +5,24 @@ The live chatbot needs to *visibly demonstrate* policy-as-data:
   1. Gate every turn; if blocked, stream a cited refusal
   2. Always append a governance footer (rules evaluated / fired / cited)
      so buyers see APRA/ASIC/OWASP cited in their own session
+  3. Persist every decision into datapai.fct_ai_guardrail_decision for
+     write-once audit evidence (joins to dim_ai_control for point-in-time
+     policy reconstruction via SCD2)
 
 Post-call validator is skipped on streams (output isn't known until
 close); run it as background audit later if needed.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import time
 from typing import Optional
+
+import psycopg2
+from psycopg2.extras import Json
 
 log = logging.getLogger(__name__)
 
@@ -34,8 +42,9 @@ def _safe_import():
 
 
 def run_gate_sync(message: str, metadata: dict) -> Optional[dict]:
-    """Returns a dict: {verdict, risk_tier, classification, citations, refusal, conditions}
-    or None if the guardrail module isn't importable (fail-open for availability).
+    """Returns a dict: {verdict, risk_tier, classification, citations, refusal, conditions,
+    gate_latency_ms} or None if the guardrail module isn't importable
+    (fail-open for availability).
     """
     run_gate, Verdict, RouterChatClient = _safe_import()
     if not run_gate:
@@ -46,13 +55,16 @@ def run_gate_sync(message: str, metadata: dict) -> Optional[dict]:
         def _chat(messages, temperature=0.0):
             return client.chat(messages=messages, temperature=temperature)
 
+        t0 = time.time()
         decision = run_gate(user_prompt=message, llm_chat=_chat, metadata=metadata)
+        latency_ms = int((time.time() - t0) * 1000)
         return {
             "verdict": decision.verdict.value,
             "risk_tier": decision.risk_tier,
             "classification": decision.classification,
             "conditions": decision.conditions,
             "refusal": decision.refusal_message,
+            "gate_latency_ms": latency_ms,
             "citations": [
                 {
                     "control_nk": c.control_nk,
@@ -69,6 +81,92 @@ def run_gate_sync(message: str, metadata: dict) -> Optional[dict]:
     except Exception as e:
         log.exception("gate invocation failed: %s", e)
         return None
+
+
+# ─── Audit persistence ────────────────────────────────────────────────────
+# Write-once insert to datapai.fct_ai_guardrail_decision in framework_db.
+# Always fire-and-forget-style (fail-open) — a DB hiccup must never block a
+# chat turn, but a loud ERROR log lets ops catch persistent write failures.
+
+def _framework_db_conn():
+    return psycopg2.connect(
+        host=os.environ.get("FRAMEWORK_DB_HOST", "localhost"),
+        port=int(os.environ.get("FRAMEWORK_DB_PORT", "5433")),
+        user=os.environ.get("FRAMEWORK_DB_USER", "postgres"),
+        password=os.environ.get("FRAMEWORK_DB_PASSWORD", "postgres"),
+        dbname=os.environ.get("FRAMEWORK_DB_NAME", "datapai_auth_db"),
+    )
+
+
+def persist_decision(
+    gate_result: Optional[dict],
+    *,
+    user_prompt: str,
+    metadata: dict,
+    session_id: Optional[str],
+    user_id: Optional[str],
+) -> None:
+    """Insert one row into datapai.fct_ai_guardrail_decision. Never raises."""
+    if not gate_result:
+        return
+    try:
+        prompt_bytes = user_prompt.encode("utf-8", errors="replace")
+        prompt_sha = hashlib.sha256(prompt_bytes).hexdigest()
+        preview = user_prompt[:200]
+
+        cited_nks = [c["control_nk"] for c in gate_result.get("citations", [])]
+        cited_fws = sorted({c["framework_code"] for c in gate_result.get("citations", [])})
+
+        gate_model_hint = os.environ.get("LLM_PRIMARY_PROVIDER", "").lower() or None
+
+        with _framework_db_conn() as pg, pg.cursor() as c:
+            c.execute(
+                """
+                INSERT INTO datapai.fct_ai_guardrail_decision (
+                    session_id, user_id, domain, ticker, exchange,
+                    user_prompt_sha256, user_prompt_length, user_prompt_preview,
+                    verdict, blocked, risk_tier, classification, conditions,
+                    cited_control_nks, cited_frameworks, cited_count,
+                    reason, gate_latency_ms, gate_model_hint, raw_gate_json
+                ) VALUES (
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s, %s
+                )
+                """,
+                (
+                    session_id,
+                    str(user_id) if user_id is not None else None,
+                    metadata.get("domain", "unknown"),
+                    metadata.get("ticker"),
+                    metadata.get("exchange"),
+                    prompt_sha,
+                    len(user_prompt),
+                    preview,
+                    gate_result["verdict"],
+                    gate_result["verdict"] in ("block", "escalate"),
+                    gate_result["risk_tier"],
+                    gate_result["classification"],
+                    Json(gate_result.get("conditions") or []),
+                    Json(cited_nks),
+                    Json(cited_fws),
+                    len(cited_nks),
+                    None,  # reason (gate returns in raw_gate_json; skip duplicating)
+                    gate_result.get("gate_latency_ms"),
+                    gate_model_hint,
+                    Json(gate_result),
+                ),
+            )
+    except Exception as e:
+        # GOVERNANCE: loud ERROR — missing audit row is an AU FS DD risk.
+        log.error(
+            "GOVERNANCE: fct_ai_guardrail_decision persist FAILED "
+            "session=%s user=%s domain=%s verdict=%s err=%s",
+            session_id, user_id, metadata.get("domain"),
+            (gate_result or {}).get("verdict"), e,
+        )
 
 
 def governance_sse_event(gate_result: Optional[dict]) -> str:

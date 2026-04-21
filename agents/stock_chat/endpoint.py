@@ -625,10 +625,16 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
         # / 16 frameworks). On BLOCK/ESCALATE, streams a cited refusal and a
         # structured governance event so the UI can show APRA/ASIC/OWASP
         # citations live. Fail-open if module unavailable (availability > demo).
-        from .guardrail_bridge import run_gate_sync, governance_sse_event, footer_markdown
-        _gate = run_gate_sync(
-            message=req.message,
-            metadata={"domain": "stock", "ticker": ticker, "exchange": exchange, "user_id": req.user_id},
+        from .guardrail_bridge import run_gate_sync, governance_sse_event, footer_markdown, persist_decision
+        _gate_meta = {"domain": "stock", "ticker": ticker, "exchange": exchange, "user_id": req.user_id}
+        _gate = run_gate_sync(message=req.message, metadata=_gate_meta)
+        # Write-once audit evidence — never blocks the turn; ERROR-level log on failure.
+        persist_decision(
+            _gate,
+            user_prompt=req.message,
+            metadata=_gate_meta,
+            session_id=session_id,
+            user_id=user_id_str,
         )
         if _gate and _gate["verdict"] in ("block", "escalate"):
             refusal = _gate["refusal"] or "I can't help with this request under our governance policy."
