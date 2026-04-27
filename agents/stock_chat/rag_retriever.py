@@ -299,7 +299,12 @@ def get_fundamental_context(ticker: str, exchange: str) -> str:
                 cols = [d[0] for d in cur.description]
                 d = dict(zip(cols, row))
 
-        def _fmt(v, pct=False, mult=1e-9, unit="B"):
+        def _fmt(v, pct=False, mult=1e9, unit="B"):
+            # Default: convert raw dollars to billions ("B"). market_cap is
+            # stored in raw currency units, so 285e9 → 285.00B. Previously
+            # mult was 1e-9 which multiplied instead of divided, producing
+            # 3e18-scale numbers that silently broke gemini-2.5-flash-lite
+            # (it returned empty parts as a sanity-check refusal).
             if v is None:
                 return "N/A"
             if pct:

@@ -192,15 +192,26 @@ def build_system_prompt(
     # Skip single-stock TA/FA lookups in copilot mode (page context is the source)
     if not is_copilot_mode:
         # Priority 1: Postgres ticker_context_cache (written by Python TA endpoint).
+        # IMPORTANT: This block can be days/weeks old and contains its own price
+        # ("Today's Close: ...") that may conflict with the live function-call
+        # result. We add an explicit "historical reference only" header so the
+        # model doesn't seize up trying to reconcile contradictory prices —
+        # gemini-2.5-flash-lite will silently return empty parts otherwise.
+        _TA_HEADER = (
+            "[Latest Technical Analysis Signal — HISTORICAL REFERENCE ONLY]\n"
+            "(Any prices below are AS-OF the 'Generated' timestamp inside the block. "
+            "For the CURRENT price, ALWAYS use the value returned by the get_stock_price "
+            "function call — never quote prices from this block as 'today's' price.)"
+        )
         cached_ta = get_ta_signal_context(ticker)
         if cached_ta:
             parts.append("")
-            parts.append("[Latest Technical Analysis Signal]")
+            parts.append(_TA_HEADER)
             parts.append(cached_ta[:2000] if len(cached_ta) > 2000 else cached_ta)
         elif ta_signal_md:
             # Priority 2: ta_signal_md from Next.js (LLM-generated markdown signal).
             parts.append("")
-            parts.append("[Latest Technical Analysis Signal]")
+            parts.append(_TA_HEADER)
             parts.append(ta_signal_md[:2000] if len(ta_signal_md) > 2000 else ta_signal_md)
         else:
             # Priority 3: Live price fetch (Polygon for US, Yahoo for ASX).

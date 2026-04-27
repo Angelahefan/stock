@@ -767,10 +767,15 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
                                         model_parts.append(part)
                             except Exception as e:
                                 logger.warning("Gemini chunk handling failed: %s — chunk=%s", e, str(chunk)[:200])
-                        logger.info(
-                            "Gemini stream round=%d events=%d full_reply_len=%d fn_call=%s finish=%s",
-                            _round, _events_seen, len(full_reply), bool(fn_call), _last_finish_reason,
-                        )
+                        # Empty-parts response from gemini-2.5 with finishReason=STOP
+                        # usually means the system prompt contained a value the model
+                        # refused on (e.g. malformed numeric data). Log loudly so we
+                        # catch future data-quality issues before users do.
+                        if not full_reply and not fn_call and _last_finish_reason == "STOP":
+                            logger.error(
+                                "Gemini returned empty response (likely sanity-refusal on bad system-prompt data) "
+                                "ticker=%s round=%d events=%d", ticker, _round, _events_seen,
+                            )
 
                     # No function call → done streaming
                     if not fn_call:
