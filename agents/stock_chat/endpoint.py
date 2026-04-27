@@ -643,35 +643,56 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
         # routine "what's the price of X" question.
         _blocked = bool(_gate and _gate["verdict"] in ("block", "escalate"))
         _block_constraint = ""
+        _skip_llm_after_block = False
         if _blocked:
-            # Short, single-sentence lead-in. We deliberately DO NOT use the
-            # gate's verbose refusal_message (multi-paragraph regulatory
-            # citation soup) — buyers want concise UX, the structured
-            # governance event below carries the citations.
-            refusal_lead = "Can't advise buy/sell — here's the facts on " + ticker.upper() + ":"
-            yield f"data: {json.dumps({'type': 'chunk', 'text': refusal_lead + chr(10) + chr(10)})}\n\n"
-            # Strong factual-only constraint: model MUST call get_stock_price
-            # and produce a price snapshot. Do NOT add another refusal sentence
-            # — that creates a "I can't help… but I can't help…" double-refusal
-            # which we just got user-flagged on.
-            _block_constraint = (
-                "\n\nGOVERNANCE CONSTRAINT (this turn ONLY — overrides all other instructions): "
-                "A short refusal line has ALREADY been emitted to the user. "
-                "Your reply MUST start DIRECTLY with the price snapshot block — "
-                "NO opening sentence, NO 'I cannot...', NO 'However...', NO transition phrase. "
-                "Format EXACTLY: "
-                "  {Company Name} ({TICKER}): ${price} · {Exchange} · {price_label}\n"
-                "  Open: X | High: X | Low: X | Vol: X\n"
-                "  Change: ±X.XX (±X.XX%)\n"
-                "Then on a new line, a single optional factual line (e.g. fundamental signal "
-                "or technical signal — ONE line only, no commentary, no recommendation). "
-                "End with: '⚠️ Not financial advice.' "
-                "DO NOT mention 'advice', 'recommendation', 'cannot', 'however' — those words "
-                "are FORBIDDEN this turn. Just facts."
-            )
+            classification = (_gate.get("classification") or "").lower()
+            is_advice_on_stock = (classification == "advice" and ticker.upper() != "COPILOT")
+
+            if is_advice_on_stock:
+                # Stock-specific advice block: stream a short lead-in and let
+                # the LLM run with a factual-only constraint so the user still
+                # gets price/news on the ticker they asked about.
+                refusal_lead = "Can't advise buy/sell — here's the facts on " + ticker.upper() + ":"
+                yield f"data: {json.dumps({'type': 'chunk', 'text': refusal_lead + chr(10) + chr(10)})}\n\n"
+                _block_constraint = (
+                    "\n\nGOVERNANCE CONSTRAINT (this turn ONLY — overrides all other instructions): "
+                    "A short refusal line has ALREADY been emitted to the user. "
+                    "Your reply MUST start DIRECTLY with the price snapshot block — "
+                    "NO opening sentence, NO 'I cannot...', NO 'However...', NO transition phrase. "
+                    "Format EXACTLY: "
+                    "  {Company Name} ({TICKER}): ${price} · {Exchange} · {price_label}\n"
+                    "  Open: X | High: X | Low: X | Vol: X\n"
+                    "  Change: ±X.XX (±X.XX%)\n"
+                    "Then on a new line, a single optional factual line (e.g. fundamental signal "
+                    "or technical signal — ONE line only, no commentary, no recommendation). "
+                    "End with: '⚠️ Not financial advice.' "
+                    "DO NOT mention 'advice', 'recommendation', 'cannot', 'however' — those words "
+                    "are FORBIDDEN this turn. Just facts."
+                )
+            else:
+                # Non-advice block (data exfil, prompt injection, PII, tool
+                # abuse, etc.). There is NO meaningful factual fallback here —
+                # do not pretend to give stock facts. Just emit a clean
+                # one-line refusal and skip the LLM round entirely.
+                short_refusal = "I can't help with this request."
+                yield f"data: {json.dumps({'type': 'chunk', 'text': short_refusal})}\n\n"
+                _skip_llm_after_block = True
 
         full_reply = ""
         model_used = _GOOGLE_MODEL
+
+        # Short-circuit: non-advice block (data exfil, prompt injection, etc.)
+        # has already emitted its one-line refusal. Skip the LLM call entirely
+        # and jump straight to the governance footer + done event below.
+        if _skip_llm_after_block:
+            gov_evt = governance_sse_event(_gate)
+            if gov_evt:
+                yield gov_evt
+            md = footer_markdown(_gate)
+            if md:
+                yield f"data: {json.dumps({'type': 'chunk', 'text': md})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'blocked': True})}\n\n"
+            return
 
         # Convert OpenAI-style messages → Gemini format
         system_text  = ""
