@@ -636,20 +636,28 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
             session_id=session_id,
             user_id=user_id_str,
         )
-        if _gate and _gate["verdict"] in ("block", "escalate"):
-            refusal = _gate["refusal"] or "I can't help with this request under our governance policy."
-            # Stream the refusal as normal chunks so existing UIs render it.
-            yield f"data: {json.dumps({'type': 'chunk', 'text': refusal})}\n\n"
-            # Structured footer event — new UI can render as a sidebar/badge.
-            gov_evt = governance_sse_event(_gate)
-            if gov_evt:
-                yield gov_evt
-            # Plain-markdown footer for legacy UIs that only know 'chunk'.
-            md = footer_markdown(_gate)
-            if md:
-                yield f"data: {json.dumps({'type': 'chunk', 'text': md})}\n\n"
-            yield f"data: {json.dumps({'type': 'done', 'blocked': True})}\n\n"
-            return
+        # Track whether this turn was blocked by governance. When blocked we
+        # still call the LLM but with a factual-only constraint, and we render
+        # the governance UI at the end. When allowed we stay completely silent
+        # about governance — buyers don't want a citation footer on every
+        # routine "what's the price of X" question.
+        _blocked = bool(_gate and _gate["verdict"] in ("block", "escalate"))
+        _block_constraint = ""
+        if _blocked:
+            refusal_lead = _gate["refusal"] or "I can't give buy/sell or personalised investment advice under our governance policy. Here is factual information instead:"
+            yield f"data: {json.dumps({'type': 'chunk', 'text': refusal_lead + chr(10) + chr(10)})}\n\n"
+            # Inject a factual-only constraint into the system prompt so the
+            # LLM still answers about the ticker (price, news, key facts) but
+            # refuses to recommend buy/sell/hold.
+            _block_constraint = (
+                "\n\nGOVERNANCE CONSTRAINT (this turn only): The user's request "
+                "was flagged as personalised investment advice. You MUST NOT "
+                "recommend buy/sell/hold actions, target prices, position "
+                "sizing, or any personal financial advice. You MAY still "
+                "answer factual questions about the ticker (current price, "
+                "recent news, fundamentals, sector context) by calling tools "
+                "as normal. Keep the answer factual and neutral."
+            )
 
         full_reply = ""
         model_used = _GOOGLE_MODEL
@@ -695,6 +703,9 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
                 {"functionDeclarations": [price_fn_decl]},
             ],
         }
+        # Append governance block constraint (if any) to the system prompt
+        if _block_constraint:
+            system_text = (system_text + _block_constraint) if system_text else _block_constraint
         if system_text:
             payload["systemInstruction"] = {"parts": [{"text": system_text}]}
 
@@ -724,20 +735,29 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
                             yield f"data: {json.dumps({'type': 'error', 'message': f'Gemini API error {resp.status_code}'})}\n\n"
                             return
 
+                        _events_seen = 0
+                        _last_finish_reason = None
                         async for line in resp.aiter_lines():
                             if not line.startswith("data: "):
                                 continue
                             raw = line[6:].strip()
                             if not raw or raw == "[DONE]":
                                 continue
+                            _events_seen += 1
                             try:
                                 chunk = json.loads(raw)
-                                parts = (
-                                    chunk.get("candidates", [{}])[0]
-                                         .get("content", {})
-                                         .get("parts", [])
-                                )
+                            except Exception as e:
+                                logger.warning("Gemini SSE JSON parse failed: %s — raw=%s", e, raw[:200])
+                                continue
+                            try:
+                                cand = (chunk.get("candidates") or [{}])[0]
+                                _last_finish_reason = cand.get("finishReason") or _last_finish_reason
+                                parts = (cand.get("content") or {}).get("parts") or []
                                 for part in parts:
+                                    # Skip "thought" parts from gemini-2.5 thinking mode —
+                                    # these are reasoning traces, not user-visible output.
+                                    if part.get("thought"):
+                                        continue
                                     if part.get("text"):
                                         full_reply += part["text"]
                                         yield f"data: {json.dumps({'type': 'chunk', 'text': part['text']})}\n\n"
@@ -745,8 +765,12 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
                                     elif "functionCall" in part:
                                         fn_call = part["functionCall"]
                                         model_parts.append(part)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.warning("Gemini chunk handling failed: %s — chunk=%s", e, str(chunk)[:200])
+                        logger.info(
+                            "Gemini stream round=%d events=%d full_reply_len=%d fn_call=%s finish=%s",
+                            _round, _events_seen, len(full_reply), bool(fn_call), _last_finish_reason,
+                        )
 
                     # No function call → done streaming
                     if not fn_call:
@@ -794,10 +818,12 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
             return
 
-        # Governance footer — show rules checked even when the turn was allowed.
-        # This is the "policy-as-data" demo signal: buyers see APRA/ASIC/OWASP
-        # cited live in their own session.
-        if _gate:
+        # Governance footer — ONLY show when the turn was actually blocked /
+        # escalated. On allow/allow_with_conditions the UI stays clean: users
+        # don't want a citation footer on routine factual questions like
+        # "what's the price of BHP". The full audit trail is still persisted
+        # to datapai.fct_ai_guardrail_decision regardless (write-once).
+        if _blocked:
             gov_evt = governance_sse_event(_gate)
             if gov_evt:
                 yield gov_evt
@@ -805,7 +831,7 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
             if md:
                 yield f"data: {json.dumps({'type': 'chunk', 'text': md})}\n\n"
 
-        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        yield f"data: {json.dumps({'type': 'done', 'blocked': _blocked})}\n\n"
 
         # Persist after streaming completes (AI governance rule — Phase 1.13)
         # Loud ERROR on failure, not "non-fatal warning". See the non-streaming
