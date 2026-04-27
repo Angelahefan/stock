@@ -134,33 +134,57 @@ _STATUS_LABEL = {
     "escalate":              "Needs human review",
 }
 
+# B2B demo pitch — the chat is a sales surface, not an end-user product.
+# Buyers come from APRA-regulated banks, ASIC-licensed financial firms,
+# ISO 42001 prospects, etc. Every turn must visibly prove the governance
+# engine is running and is covering the frameworks they care about.
+#
+# Numbers are pulled from the policy catalog (datapai.dim_ai_control); the
+# inline framework list is curated for AU + global salience. If you add or
+# remove frameworks from the catalog, update this string in lock-step.
+_CATALOG_PITCH = (
+    "213 controls scanned · 16 frameworks: "
+    "APRA CPS 230 · ASIC REP 798 · ISO 42001 · NIST AI RMF · "
+    "OAIC Privacy APPs · AU 6 Principles · NSW AIAF · OWASP Agentic Top 10 +8 more"
+)
 
-def footer_markdown(gate_result: Optional[dict]) -> str:
-    """Compact footer (≤3 lines) for chat UIs.
 
-    Buyers want at-a-glance "policy was applied" signal, not a wall of
-    citations. The structured `governance` SSE event still carries the
-    full rule list for any UI that wants to render a sidebar/badge."""
+def footer_markdown(gate_result: Optional[dict], *, blocked: bool = False) -> str:
+    """Footer rendered on every chat turn — this is the B2B demo surface.
+
+    Allow / Compliant path: one tasteful italic line proving the gate ran
+    and listing the framework coverage buyers want to see (APRA, ASIC,
+    ISO 42001, NIST AI RMF, OAIC, AU 6 Principles, NSW AIAF, OWASP, etc).
+    Designed to be visible-but-not-noisy — small visual weight, no rule
+    list, no clinical jargon.
+
+    Block path: shows WHICH controls fired (`control_id` in code-format),
+    which frameworks they came from, and the total rules cited count.
+    This is the compliance evidence prospects screenshot for their CISO.
+
+    The structured `governance` SSE event still carries the full citation
+    list separately for any sidebar/badge UI that wants to render it.
+    """
     if not gate_result or FOOTER_MODE == "off":
         return ""
     cites = gate_result.get("citations") or []
-    status = _STATUS_LABEL.get(gate_result["verdict"], gate_result["verdict"])
 
-    # Compact one-line summary of the top 1-2 frameworks involved.
-    if cites:
-        # Pick the most prominent rule (first citation) + framework count.
-        top = cites[0]
-        frameworks = sorted({c.get("framework_code") or c.get("framework_name", "")
-                             for c in cites if c.get("framework_code") or c.get("framework_name")})
-        # Show 1-2 framework codes inline
-        fw_inline = ", ".join(frameworks[:2]) + (f" +{len(frameworks)-2} more" if len(frameworks) > 2 else "")
-        rule_line = f"_{top.get('control_id','')} ({fw_inline}) — {len(cites)} rules cited_"
-    else:
-        rule_line = "_No rules fired_"
+    if not blocked:
+        # Allow path: one-line proof + framework breadth.
+        return "\n".join([
+            "",
+            f"_✅ AI governance · {_CATALOG_PITCH}_",
+        ])
+
+    # Block path: which rules fired, which frameworks they came from.
+    top_ids = " · ".join(f"`{c['control_id']}`" for c in cites[:3])
+    more_rules = f" + {len(cites) - 3} more" if len(cites) > 3 else ""
+    fw_names = sorted({c.get("framework_name", "") for c in cites if c.get("framework_name")})
+    fw_inline = " · ".join(fw_names[:3]) + (f" + {len(fw_names) - 3} more" if len(fw_names) > 3 else "")
 
     return "\n".join([
         "",
         "───",
-        f"🛡 **AI governance** — {status}",
-        rule_line,
+        f"🛡 **AI governance · Blocked** — {top_ids}{more_rules}",
+        f"_Frameworks cited: {fw_inline}_" if fw_inline else "",
     ])

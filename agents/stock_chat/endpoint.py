@@ -688,7 +688,7 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
             gov_evt = governance_sse_event(_gate)
             if gov_evt:
                 yield gov_evt
-            md = footer_markdown(_gate)
+            md = footer_markdown(_gate, blocked=True)
             if md:
                 yield f"data: {json.dumps({'type': 'chunk', 'text': md})}\n\n"
             yield f"data: {json.dumps({'type': 'done', 'blocked': True})}\n\n"
@@ -855,16 +855,19 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
             return
 
-        # Governance footer — ONLY show when the turn was actually blocked /
-        # escalated. On allow/allow_with_conditions the UI stays clean: users
-        # don't want a citation footer on routine factual questions like
-        # "what's the price of BHP". The full audit trail is still persisted
-        # to datapai.fct_ai_guardrail_decision regardless (write-once).
-        if _blocked:
+        # Governance footer rendered on EVERY turn — this chat is a B2B demo
+        # surface for the AI governance product, not a polished retail UX.
+        # Buyers want to see proof on every turn that the gate ran and that
+        # we cover the AU/global frameworks they care about. The visual
+        # weight differs by verdict:
+        #   allow → one tasteful italic line ("✅ AI governance · 213 controls
+        #           scanned across APRA / ASIC / ISO 42001 / NIST / OAIC ...")
+        #   block → 2-line block: cited control IDs + framework names
+        if _gate:
             gov_evt = governance_sse_event(_gate)
             if gov_evt:
                 yield gov_evt
-            md = footer_markdown(_gate)
+            md = footer_markdown(_gate, blocked=_blocked)
             if md:
                 yield f"data: {json.dumps({'type': 'chunk', 'text': md})}\n\n"
 
