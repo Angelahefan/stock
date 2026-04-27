@@ -154,7 +154,7 @@ def footer_markdown(gate_result: Optional[dict]) -> str:
                              for c in cites if c.get("framework_code") or c.get("framework_name")})
         # Show 1-2 framework codes inline
         fw_inline = ", ".join(frameworks[:2]) + (f" +{len(frameworks)-2} more" if len(frameworks) > 2 else "")
-        rule_line = f"_{top.get('control_id','')} ({fw_inline}) — {len(cites)} rules cited from datapai.dim_ai_control_"
+        rule_line = f"_{top.get('control_id','')} ({fw_inline}) — {len(cites)} rules cited_"
     else:
         rule_line = "_No rules fired_"
 
