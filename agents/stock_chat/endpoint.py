@@ -644,19 +644,30 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
         _blocked = bool(_gate and _gate["verdict"] in ("block", "escalate"))
         _block_constraint = ""
         if _blocked:
-            refusal_lead = _gate["refusal"] or "I can't give buy/sell or personalised investment advice under our governance policy. Here is factual information instead:"
+            # Short, single-sentence lead-in. We deliberately DO NOT use the
+            # gate's verbose refusal_message (multi-paragraph regulatory
+            # citation soup) — buyers want concise UX, the structured
+            # governance event below carries the citations.
+            refusal_lead = "Can't advise buy/sell — here's the facts on " + ticker.upper() + ":"
             yield f"data: {json.dumps({'type': 'chunk', 'text': refusal_lead + chr(10) + chr(10)})}\n\n"
-            # Inject a factual-only constraint into the system prompt so the
-            # LLM still answers about the ticker (price, news, key facts) but
-            # refuses to recommend buy/sell/hold.
+            # Strong factual-only constraint: model MUST call get_stock_price
+            # and produce a price snapshot. Do NOT add another refusal sentence
+            # — that creates a "I can't help… but I can't help…" double-refusal
+            # which we just got user-flagged on.
             _block_constraint = (
-                "\n\nGOVERNANCE CONSTRAINT (this turn only): The user's request "
-                "was flagged as personalised investment advice. You MUST NOT "
-                "recommend buy/sell/hold actions, target prices, position "
-                "sizing, or any personal financial advice. You MAY still "
-                "answer factual questions about the ticker (current price, "
-                "recent news, fundamentals, sector context) by calling tools "
-                "as normal. Keep the answer factual and neutral."
+                "\n\nGOVERNANCE CONSTRAINT (this turn ONLY — overrides all other instructions): "
+                "A short refusal line has ALREADY been emitted to the user. "
+                "Your reply MUST start DIRECTLY with the price snapshot block — "
+                "NO opening sentence, NO 'I cannot...', NO 'However...', NO transition phrase. "
+                "Format EXACTLY: "
+                "  {Company Name} ({TICKER}): ${price} · {Exchange} · {price_label}\n"
+                "  Open: X | High: X | Low: X | Vol: X\n"
+                "  Change: ±X.XX (±X.XX%)\n"
+                "Then on a new line, a single optional factual line (e.g. fundamental signal "
+                "or technical signal — ONE line only, no commentary, no recommendation). "
+                "End with: '⚠️ Not financial advice.' "
+                "DO NOT mention 'advice', 'recommendation', 'cannot', 'however' — those words "
+                "are FORBIDDEN this turn. Just facts."
             )
 
         full_reply = ""

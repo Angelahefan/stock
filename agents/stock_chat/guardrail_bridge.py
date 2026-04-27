@@ -136,25 +136,31 @@ _STATUS_LABEL = {
 
 
 def footer_markdown(gate_result: Optional[dict]) -> str:
-    """Human-readable footer for chat UIs that don't render the structured
-    governance event. Tuned for B2B demo: leads with AU regulatory coverage,
-    hides internal mechanics (risk tier, classification, conditions)."""
+    """Compact footer (≤3 lines) for chat UIs.
+
+    Buyers want at-a-glance "policy was applied" signal, not a wall of
+    citations. The structured `governance` SSE event still carries the
+    full rule list for any UI that wants to render a sidebar/badge."""
     if not gate_result or FOOTER_MODE == "off":
         return ""
-    cites = gate_result["citations"]
+    cites = gate_result.get("citations") or []
     status = _STATUS_LABEL.get(gate_result["verdict"], gate_result["verdict"])
-    lines = [
+
+    # Compact one-line summary of the top 1-2 frameworks involved.
+    if cites:
+        # Pick the most prominent rule (first citation) + framework count.
+        top = cites[0]
+        frameworks = sorted({c.get("framework_code") or c.get("framework_name", "")
+                             for c in cites if c.get("framework_code") or c.get("framework_name")})
+        # Show 1-2 framework codes inline
+        fw_inline = ", ".join(frameworks[:2]) + (f" +{len(frameworks)-2} more" if len(frameworks) > 2 else "")
+        rule_line = f"_{top.get('control_id','')} ({fw_inline}) — {len(cites)} rules cited from datapai.dim_ai_control_"
+    else:
+        rule_line = "_No rules fired_"
+
+    return "\n".join([
         "",
         "───",
         f"🛡 **AI governance** — {status}",
-    ]
-    if cites:
-        lines.append(f"Rules cited ({len(cites)}):")
-        show = cites if FOOTER_MODE == "verbose" else cites[:3]
-        for c in show:
-            nm = c["control_name"] or c["control_id"]
-            lines.append(f"  • `{c['control_id']}` — {nm}  _({c['framework_name']})_")
-        if FOOTER_MODE == "summary" and len(cites) > 3:
-            lines.append(f"  • …and {len(cites) - 3} more")
-    lines.append("_Source: datapai · 213 AI governance controls · 16 regulatory & industry frameworks (APRA CPS 230, ASIC REP 798, OAIC Privacy APPs, AU 6 Principles, NSW AIAF, OWASP Agentic Top 10, NIST AI RMF, ISO 42001, …)_")
-    return "\n".join(lines)
+        rule_line,
+    ])
