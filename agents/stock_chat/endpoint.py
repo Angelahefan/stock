@@ -198,6 +198,92 @@ def _get_local_company_name(ticker: str, exchange: str, lang: str) -> str | None
         return None
 
 
+async def _get_fx_rate(base: str, quote: str) -> dict:
+    """
+    Latest FX rate from datapai.fx_rates_daily (refreshed nightly from Yahoo
+    by the stock_fx_rates DAG). Falls back to a live yahoo lookup if the DB
+    doesn't have the pair (e.g. exotic crosses), so the chat never says
+    "I can't fetch currency data" — that was the most-asked B2B-demo
+    question we couldn't answer until 2026-05-03.
+    """
+    base = (base or "").upper().strip()
+    quote = (quote or "").upper().strip()
+    if not base or not quote:
+        return {"error": "base and quote currency codes required (e.g. AUD, USD, GBP)"}
+    if base == quote:
+        return {"base": base, "quote": quote, "rate": 1.0, "source": "identity"}
+
+    # 1. Try DB (canonical, written by Airflow stock_fx_rates DAG)
+    try:
+        from scripts.lib.db_helpers import get_conn
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                # Direct pair
+                cur.execute(
+                    "SELECT rate, trade_date::text, source "
+                    "FROM datapai.fx_rates_daily "
+                    "WHERE base_currency=%s AND quote_currency=%s "
+                    "ORDER BY trade_date DESC LIMIT 1",
+                    (base, quote),
+                )
+                row = cur.fetchone()
+                if row:
+                    return {"base": base, "quote": quote, "rate": float(row[0]),
+                            "trade_date": row[1], "source": row[2]}
+                # Reverse pair → invert
+                cur.execute(
+                    "SELECT rate, trade_date::text, source "
+                    "FROM datapai.fx_rates_daily "
+                    "WHERE base_currency=%s AND quote_currency=%s "
+                    "ORDER BY trade_date DESC LIMIT 1",
+                    (quote, base),
+                )
+                row = cur.fetchone()
+                if row and float(row[0]) != 0:
+                    return {"base": base, "quote": quote, "rate": round(1.0 / float(row[0]), 6),
+                            "trade_date": row[1], "source": f"{row[2]}-inverted"}
+                # Cross via USD (USD->base + USD->quote)
+                cur.execute(
+                    "SELECT base_currency, quote_currency, rate, trade_date::text "
+                    "FROM datapai.fx_rates_daily "
+                    "WHERE (base_currency='USD' AND quote_currency=ANY(%s)) "
+                    "ORDER BY trade_date DESC",
+                    ([base, quote],),
+                )
+                rows = cur.fetchall()
+                rates = {}
+                for b, q, r, d in rows:
+                    if q not in rates:
+                        rates[q] = (float(r), d)
+                if base in rates and quote in rates:
+                    rate = rates[quote][0] / rates[base][0]
+                    return {"base": base, "quote": quote,
+                            "rate": round(rate, 6),
+                            "trade_date": min(rates[base][1], rates[quote][1]),
+                            "source": "yahoo-cross-usd"}
+    except Exception as e:
+        logger.warning("FX DB lookup failed for %s/%s: %s", base, quote, e)
+
+    # 2. Live fallback — Yahoo FX pair (e.g. AUDUSD=X)
+    try:
+        import httpx
+        symbol = f"{base}{quote}=X"
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=1d"
+        async with httpx.AsyncClient(timeout=8) as hc:
+            r = await hc.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            r.raise_for_status()
+            j = r.json()
+        meta = (j.get("chart", {}).get("result") or [{}])[0].get("meta", {})
+        price = meta.get("regularMarketPrice") or meta.get("previousClose")
+        if price:
+            return {"base": base, "quote": quote, "rate": float(price),
+                    "trade_date": "live", "source": "yahoo-live"}
+    except Exception as e:
+        logger.warning("FX live fallback failed for %s%s: %s", base, quote, e)
+
+    return {"error": f"No rate found for {base}/{quote}"}
+
+
 async def _yahoo_quick_price(ticker: str, exchange: str) -> dict:
     """
     Fast async Yahoo Finance price fetch for Gemini function calling.
@@ -725,6 +811,41 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
             }
         }
 
+        # FX rate function — used when the user asks about currency exchange,
+        # forex pairs, or "what's X in Y currency". Reads datapai.fx_rates_daily
+        # (refreshed nightly from Yahoo by the stock_fx_rates Airflow DAG) and
+        # falls back to a live Yahoo lookup for exotic pairs. This is critical
+        # for the B2B demo — financial-industry buyers expect a chatbot to
+        # answer "what's the AUD/USD rate" instantly.
+        fx_fn_decl = {
+            "name": "get_fx_rate",
+            "description": (
+                "Get a LIVE currency exchange rate between two currencies. "
+                "ONLY call this when the user EXPLICITLY asks for live, "
+                "current, today's, or latest rate (e.g. 'live AUD/USD rate', "
+                "'what's the JPY/USD right now', 'today's GBP rate'). "
+                "For general FX knowledge questions, answer directly from "
+                "your training data with a freshness disclaimer instead of "
+                "calling this tool. Coverage is currently limited to major "
+                "USD pairs (AUD, CNY, GBP, HKD, IDR, JPY, MYR, SGD, THB, "
+                "TWD, VND); other pairs fall back to a live Yahoo lookup."
+            ),
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "base": {
+                        "type": "STRING",
+                        "description": "Base currency ISO code (3 letters). E.g. AUD for 'AUD/USD'."
+                    },
+                    "quote": {
+                        "type": "STRING",
+                        "description": "Quote currency ISO code (3 letters). E.g. USD for 'AUD/USD'."
+                    }
+                },
+                "required": ["base", "quote"]
+            }
+        }
+
         # NOTE: Google Search and Function Calling CANNOT be combined in Gemini API.
         # We choose function calling for accurate prices (top priority).
         # Gemini's training data covers general market info (news, fundamentals, etc).
@@ -732,7 +853,7 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
             "contents":         gem_contents,
             "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1024},
             "tools": [
-                {"functionDeclarations": [price_fn_decl]},
+                {"functionDeclarations": [price_fn_decl, fx_fn_decl]},
             ],
         }
         # Append governance block constraint (if any) to the system prompt
@@ -830,6 +951,11 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
                             )
                             if local_name:
                                 fn_result["company_name_local"] = local_name
+                    elif fn_name == "get_fx_rate":
+                        fn_result = await _get_fx_rate(
+                            fn_args.get("base", ""),
+                            fn_args.get("quote", ""),
+                        )
                     else:
                         fn_result = {"error": f"Unknown function: {fn_name}"}
 
