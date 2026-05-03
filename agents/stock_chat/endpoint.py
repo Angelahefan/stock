@@ -200,75 +200,30 @@ def _get_local_company_name(ticker: str, exchange: str, lang: str) -> str | None
 
 async def _get_fx_rate(base: str, quote: str) -> dict:
     """
-    Latest FX rate from datapai.fx_rates_daily (refreshed nightly from Yahoo
-    by the stock_fx_rates DAG). Falls back to a live yahoo lookup if the DB
-    doesn't have the pair (e.g. exotic crosses), so the chat never says
-    "I can't fetch currency data" — that was the most-asked B2B-demo
-    question we couldn't answer until 2026-05-03.
+    LIVE FX rate (Yahoo Finance, ~20-min delayed) with timestamp + timezone.
+
+    Mirrors the stock-price formatting contract: returns price_label
+    ("Live" or "Close <date> <HH:MM AM/PM> <city> time") so the LLM can
+    show *when* the rate was captured exactly the way it shows for stocks.
+    Yahoo FX pairs (AUDUSD=X) report a regularMarketTime epoch + a
+    regularMarketState (REGULAR / CLOSED / PRE / POST) — we use those.
+
+    Falls back to datapai.fx_rates_daily (nightly DAG) if Yahoo fails.
     """
     base = (base or "").upper().strip()
     quote = (quote or "").upper().strip()
     if not base or not quote:
         return {"error": "base and quote currency codes required (e.g. AUD, USD, GBP)"}
     if base == quote:
-        return {"base": base, "quote": quote, "rate": 1.0, "source": "identity"}
+        return {"base": base, "quote": quote, "rate": 1.0,
+                "price_label": "Identity", "source": "identity"}
 
-    # 1. Try DB (canonical, written by Airflow stock_fx_rates DAG)
-    try:
-        from scripts.lib.db_helpers import get_conn
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                # Direct pair
-                cur.execute(
-                    "SELECT rate, trade_date::text, source "
-                    "FROM datapai.fx_rates_daily "
-                    "WHERE base_currency=%s AND quote_currency=%s "
-                    "ORDER BY trade_date DESC LIMIT 1",
-                    (base, quote),
-                )
-                row = cur.fetchone()
-                if row:
-                    return {"base": base, "quote": quote, "rate": float(row[0]),
-                            "trade_date": row[1], "source": row[2]}
-                # Reverse pair → invert
-                cur.execute(
-                    "SELECT rate, trade_date::text, source "
-                    "FROM datapai.fx_rates_daily "
-                    "WHERE base_currency=%s AND quote_currency=%s "
-                    "ORDER BY trade_date DESC LIMIT 1",
-                    (quote, base),
-                )
-                row = cur.fetchone()
-                if row and float(row[0]) != 0:
-                    return {"base": base, "quote": quote, "rate": round(1.0 / float(row[0]), 6),
-                            "trade_date": row[1], "source": f"{row[2]}-inverted"}
-                # Cross via USD (USD->base + USD->quote)
-                cur.execute(
-                    "SELECT base_currency, quote_currency, rate, trade_date::text "
-                    "FROM datapai.fx_rates_daily "
-                    "WHERE (base_currency='USD' AND quote_currency=ANY(%s)) "
-                    "ORDER BY trade_date DESC",
-                    ([base, quote],),
-                )
-                rows = cur.fetchall()
-                rates = {}
-                for b, q, r, d in rows:
-                    if q not in rates:
-                        rates[q] = (float(r), d)
-                if base in rates and quote in rates:
-                    rate = rates[quote][0] / rates[base][0]
-                    return {"base": base, "quote": quote,
-                            "rate": round(rate, 6),
-                            "trade_date": min(rates[base][1], rates[quote][1]),
-                            "source": "yahoo-cross-usd"}
-    except Exception as e:
-        logger.warning("FX DB lookup failed for %s/%s: %s", base, quote, e)
-
-    # 2. Live fallback — Yahoo FX pair (e.g. AUDUSD=X)
+    # ── 1. LIVE Yahoo lookup (preferred — accurate to ~20 min) ─────────────
     try:
         import httpx
+        from datetime import datetime, timezone, timedelta
         symbol = f"{base}{quote}=X"
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=1d"
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1m&range=1d"
         async with httpx.AsyncClient(timeout=8) as hc:
             r = await hc.get(url, headers={"User-Agent": "Mozilla/5.0"})
             r.raise_for_status()
@@ -276,10 +231,75 @@ async def _get_fx_rate(base: str, quote: str) -> dict:
         meta = (j.get("chart", {}).get("result") or [{}])[0].get("meta", {})
         price = meta.get("regularMarketPrice") or meta.get("previousClose")
         if price:
-            return {"base": base, "quote": quote, "rate": float(price),
-                    "trade_date": "live", "source": "yahoo-live"}
+            ts_epoch = meta.get("regularMarketTime") or 0
+            tz_name = meta.get("exchangeTimezoneName") or "UTC"
+            mkt_state = (meta.get("marketState") or "").upper()
+            prev_close = meta.get("chartPreviousClose") or meta.get("previousClose")
+            change = float(price) - float(prev_close) if prev_close else None
+            change_pct = (change / float(prev_close) * 100) if (prev_close and change is not None) else None
+
+            # Build human-readable timestamp like the stock label format:
+            # "Live 02:35 PM London time"  or  "Close 03 May 11:00 PM Sydney time"
+            try:
+                from zoneinfo import ZoneInfo
+                tz = ZoneInfo(tz_name)
+            except Exception:
+                tz = timezone.utc
+            ts_local = datetime.fromtimestamp(ts_epoch, tz=tz) if ts_epoch else datetime.now(tz)
+            city = tz_name.split("/")[-1].replace("_", " ") if "/" in tz_name else tz_name
+            label_prefix = "Live" if mkt_state == "REGULAR" else "Close"
+            price_label = f"{label_prefix} {ts_local.strftime('%b %d %I:%M %p')} {city} time"
+
+            # Freshness: how stale is this rate vs now?
+            now_utc = datetime.now(timezone.utc)
+            ts_utc = datetime.fromtimestamp(ts_epoch, tz=timezone.utc) if ts_epoch else now_utc
+            staleness_min = int((now_utc - ts_utc).total_seconds() / 60)
+
+            return {
+                "base": base,
+                "quote": quote,
+                "rate": round(float(price), 6),
+                "previous_close": round(float(prev_close), 6) if prev_close else None,
+                "change": round(change, 6) if change is not None else None,
+                "change_percent": round(change_pct, 4) if change_pct is not None else None,
+                "trade_time_utc": ts_utc.isoformat(timespec="seconds"),
+                "trade_time_local": ts_local.strftime("%Y-%m-%d %H:%M:%S %Z"),
+                "timezone": tz_name,
+                "market_state": mkt_state or "UNKNOWN",
+                "staleness_minutes": staleness_min,
+                "price_label": price_label,
+                "source": "Yahoo Finance",
+            }
     except Exception as e:
-        logger.warning("FX live fallback failed for %s%s: %s", base, quote, e)
+        logger.warning("FX live Yahoo lookup failed for %s%s: %s — falling back to DB", base, quote, e)
+
+    # ── 2. DB fallback (datapai.fx_rates_daily, USD-base pairs only) ───────
+    try:
+        from scripts.lib.db_helpers import get_conn
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT rate, trade_date::text FROM datapai.fx_rates_daily "
+                    "WHERE base_currency=%s AND quote_currency=%s "
+                    "ORDER BY trade_date DESC LIMIT 1", (base, quote))
+                row = cur.fetchone()
+                if row:
+                    return {"base": base, "quote": quote, "rate": float(row[0]),
+                            "trade_date": row[1], "price_label": f"Close {row[1]}",
+                            "source": "datapai.fx_rates_daily (Yahoo nightly)"}
+                cur.execute(
+                    "SELECT rate, trade_date::text FROM datapai.fx_rates_daily "
+                    "WHERE base_currency=%s AND quote_currency=%s "
+                    "ORDER BY trade_date DESC LIMIT 1", (quote, base))
+                row = cur.fetchone()
+                if row and float(row[0]) != 0:
+                    return {"base": base, "quote": quote,
+                            "rate": round(1.0 / float(row[0]), 6),
+                            "trade_date": row[1],
+                            "price_label": f"Close {row[1]}",
+                            "source": "datapai.fx_rates_daily (Yahoo nightly, inverted)"}
+    except Exception as e:
+        logger.warning("FX DB fallback failed for %s/%s: %s", base, quote, e)
 
     return {"error": f"No rate found for {base}/{quote}"}
 
@@ -820,15 +840,14 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
         fx_fn_decl = {
             "name": "get_fx_rate",
             "description": (
-                "Get a LIVE currency exchange rate between two currencies. "
-                "ONLY call this when the user EXPLICITLY asks for live, "
-                "current, today's, or latest rate (e.g. 'live AUD/USD rate', "
-                "'what's the JPY/USD right now', 'today's GBP rate'). "
-                "For general FX knowledge questions, answer directly from "
-                "your training data with a freshness disclaimer instead of "
-                "calling this tool. Coverage is currently limited to major "
-                "USD pairs (AUD, CNY, GBP, HKD, IDR, JPY, MYR, SGD, THB, "
-                "TWD, VND); other pairs fall back to a live Yahoo lookup."
+                "Get the latest currency exchange rate (Yahoo Finance, "
+                "~20-min delayed during market hours). ALWAYS call this for "
+                "ANY currency / FX / forex question, including conversions "
+                "(e.g. 'AUD/USD', 'convert 100 USD to JPY', 'what is GBP "
+                "in EUR'). NEVER answer FX rates from training data — they "
+                "go stale daily. Returns rate + price_label (date + time + "
+                "timezone) + market_state so the answer always shows when "
+                "the rate was captured."
             ),
             "parameters": {
                 "type": "OBJECT",
