@@ -1,6 +1,0 @@
-# {{ job._name }} — Control-M Command job{% if notes %}  ({{ notes }}){% endif %}
-{{ task_id }} = BashOperator(
-    task_id="{{ task_id }}",
-    bash_command={{ fields.command | default(job.Command) | default("echo TODO") | tojson }},
-    env={{ fields.env | default({}) | tojson }},
-)

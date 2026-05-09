@@ -1,8 +1,0 @@
-# {{ job._name }} — Control-M AWS job ({{ fields.aws_service | default("Lambda") }})
-{{ task_id }} = LambdaInvokeFunctionOperator(
-    task_id="{{ task_id }}",
-    function_name="{{ fields.function_name | default('TODO_lambda') }}",
-    payload={{ fields.payload | default({}) | tojson }},
-    aws_conn_id="{{ fields.aws_conn_id | default('aws_default') }}",
-    region_name="{{ fields.region | default('ap-southeast-2') }}",
-)

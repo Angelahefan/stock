@@ -1,7 +1,0 @@
-# {{ job._name }} — Control-M Database job ({{ fields.db_type | default("sql") }})
-{{ task_id }} = SQLExecuteQueryOperator(
-    task_id="{{ task_id }}",
-    conn_id="{{ fields.connection | default('TODO_sql_conn_id') }}",
-    sql={{ fields.sql | default(fields.sql_file) | default("-- TODO: SQL body or path") | tojson }},
-    parameters={{ fields.params | default({}) | tojson }},
-)

@@ -1,8 +1,0 @@
-# {{ job._name }} — Control-M Hadoop / Spark job
-{{ task_id }} = SparkSubmitOperator(
-    task_id="{{ task_id }}",
-    application="{{ fields.application | default('/TODO/app.py') }}",
-    conn_id="{{ fields.master | default('spark_default') }}",
-    conf={{ fields.spark_conf | default({}) | tojson }},
-    application_args={{ fields.args | default([]) | tojson }},
-)
