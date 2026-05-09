@@ -1,0 +1,10 @@
+# {{ job._name }} — Control-M Application Integrator (generic plugin → REST)
+# Original AI job type: {{ fields.ai_job_type | default("unknown") }}
+{{ task_id }} = HttpOperator(
+    task_id="{{ task_id }}",
+    http_conn_id="{{ fields.connection | default('http_default') }}",
+    endpoint="{{ fields.endpoint | default('/TODO') }}",
+    method="POST",
+    data={{ fields.params | default({}) | tojson }},
+    log_response=True,
+)

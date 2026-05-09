@@ -1,0 +1,5 @@
+# {{ job._name }} — Control-M EmbeddedScript
+{{ task_id }} = BashOperator(
+    task_id="{{ task_id }}",
+    bash_command={{ fields.script | default(job.Script) | default("# TODO: embedded script body") | tojson }},
+)

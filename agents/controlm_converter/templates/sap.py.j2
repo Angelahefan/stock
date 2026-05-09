@@ -1,0 +1,12 @@
+# {{ job._name }} — Control-M SAP job (no native Airflow provider — shells out)
+{{ task_id }} = BashOperator(
+    task_id="{{ task_id }}",
+    bash_command=(
+        "python -m datapai.sap_runner "
+        "--system {{ fields.sap_system | default('TODO') }} "
+        "--program {{ fields.abap_program | default('TODO') }} "
+        "--variant {{ fields.variant | default('') }} "
+        "--user {{ fields.step_user | default('') }} "
+        "--lang {{ fields.language | default('EN') }}"
+    ),
+)

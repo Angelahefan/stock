@@ -1,0 +1,6 @@
+# {{ job._name }} — Control-M unknown/unsupported type ({{ job.Type | default("?") }})
+# TODO: operator review required — agent could not classify this job confidently.
+{{ task_id }} = BashOperator(
+    task_id="{{ task_id }}",
+    bash_command={{ fields.raw | default(job.Command) | default("echo TODO: review original Control-M job: " ~ job._name) | tojson }},
+)
