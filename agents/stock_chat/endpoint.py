@@ -804,7 +804,11 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
                 # Stock-specific advice block: stream a short lead-in and let
                 # the LLM run with a factual-only constraint so the user still
                 # gets price/news on the ticker they asked about.
-                refusal_lead = "Can't advise buy/sell — here's the facts on " + ticker.upper() + ":"
+                # Lead-in is ticker-agnostic — the user may have asked about
+                # a DIFFERENT ticker than the page they're on (page=CSL,
+                # question="should I buy BHP"). Don't bake the page ticker into
+                # the refusal line; the LLM will quote the right ticker below.
+                refusal_lead = "Can't advise buy/sell — here are the facts:"
                 yield f"data: {json.dumps({'type': 'chunk', 'text': refusal_lead + chr(10) + chr(10)})}\n\n"
                 _block_constraint = (
                     "\n\nGOVERNANCE CONSTRAINT (this turn ONLY — overrides all other instructions): "
