@@ -509,11 +509,22 @@ def footer_markdown(gate_result: Optional[dict], *, blocked: bool = False) -> st
     cites = gate_result.get("citations") or []
     level = gate_result.get("sensitivity_level") or "BALANCED"
     # Tiny level badge — visible proof to demo audience that the dial is real.
-    # Only render when non-default so PERMISSIVE/STRICT/LOCKDOWN stand out
-    # but the everyday BALANCED state stays clean.
-    level_emoji = {"PERMISSIVE": "🟢", "LIGHT": "🟡", "BALANCED": "🔵",
-                   "STRICT": "🟠", "LOCKDOWN": "🔴"}.get(level, "🔵")
-    level_badge = f"  ·  {level_emoji} {level.title()} mode" if level != "BALANCED" else ""
+    # Buyer-friendly labels (Option B — pure 1-5 strictness scale) so anyone
+    # can tell at a glance how tight the dial is set. Internal codes
+    # (PERMISSIVE/LIGHT/BALANCED/STRICT/LOCKDOWN) stay as-is in DB + API for
+    # backwards compatibility — only the *display* label changes.
+    _LEVEL_DISPLAY = {
+        "PERMISSIVE": ("🟢", "1 — Most Open"),
+        "LIGHT":      ("🟡", "2 — Light"),
+        "BALANCED":   ("🔵", "3 — Standard"),
+        "STRICT":     ("🟠", "4 — Strict"),
+        "LOCKDOWN":   ("🔴", "5 — Maximum"),
+    }
+    level_emoji, level_display = _LEVEL_DISPLAY.get(level, ("🔵", "3 — Standard"))
+    # Only render the badge when the dial is NOT at the everyday default
+    # (BALANCED / "3 — Standard"), so the chat UI stays clean most of the time
+    # but PERMISSIVE / STRICT / LOCKDOWN stand out.
+    level_badge = f"  ·  {level_emoji} {level_display}" if level != "BALANCED" else ""
 
     if not blocked:
         # Allow path: one-line proof + framework breadth (live from DB).
