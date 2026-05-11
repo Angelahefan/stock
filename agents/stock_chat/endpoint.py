@@ -731,9 +731,21 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
         # / 16 frameworks). On BLOCK/ESCALATE, streams a cited refusal and a
         # structured governance event so the UI can show APRA/ASIC/OWASP
         # citations live. Fail-open if module unavailable (availability > demo).
-        from .guardrail_bridge import run_gate_sync, governance_sse_event, footer_markdown, persist_decision
-        _gate_meta = {"domain": "stock", "ticker": ticker, "exchange": exchange, "user_id": req.user_id}
-        _gate = run_gate_sync(message=req.message, metadata=_gate_meta)
+        from .guardrail_bridge import run_gate_sync, governance_sse_event, footer_markdown, persist_decision, normalise_level
+        # Sensitivity Dial — customer-tunable governance strictness.
+        # Resolution order: (1) explicit URL query param ?level=...
+        # (2) request body field, (3) BALANCED default. Per-tenant config
+        # tables come in Phase 2; for now this lets us flip live in the demo.
+        _level = normalise_level(
+            request.query_params.get("level")
+            or getattr(req, "sensitivity_level", None)
+            or "BALANCED"
+        )
+        _gate_meta = {
+            "domain": "stock", "ticker": ticker, "exchange": exchange,
+            "user_id": req.user_id, "sensitivity_level": _level,
+        }
+        _gate = run_gate_sync(message=req.message, metadata=_gate_meta, level=_level)
         # Write-once audit evidence — never blocks the turn; ERROR-level log on failure.
         persist_decision(
             _gate,
