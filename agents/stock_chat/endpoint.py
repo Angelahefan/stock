@@ -796,11 +796,86 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
         _blocked = bool(_gate and _gate["verdict"] in ("block", "escalate"))
         _block_constraint = ""
         _skip_llm_after_block = False
+        # Sensitivity-level addendum to system prompt — applied even when NOT
+        # blocked, because the LLM's own training defaults to refusing advice
+        # regardless of our gate. At PERMISSIVE / LIGHT we explicitly authorise
+        # a research-style view; at STRICT / LOCKDOWN we tighten further.
+        _level_addendum = ""
+        if _gate:
+            eff_level = (_gate.get("sensitivity_level") or "BALANCED").upper()
+            raw_v = (_gate.get("raw_verdict") or _gate.get("verdict") or "allow").lower()
+            catalog_would_block = raw_v in ("block", "escalate")
+            cited_ids_lower = {
+                (c.get("control_id") or "").lower()
+                for c in (_gate.get("citations") or [])
+            }
+            advice_family = {"asic.corp_act_912a", "asic.rg274_ddo_tmd",
+                             "afsl.best_interests", "finra.comm"}
+            is_advice_topic = catalog_would_block and (
+                _gate.get("classification", "").lower() in
+                    ("advice", "recommendation", "personal_advice",
+                     "investment_advice", "financial_advice")
+                or bool(cited_ids_lower & advice_family)
+            )
+
+            if eff_level == "PERMISSIVE" and is_advice_topic:
+                _level_addendum = (
+                    "\n\nSENSITIVITY LEVEL = PERMISSIVE (this turn — overrides default refusal).\n"
+                    "The customer has explicitly opted into Permissive mode. You ARE authorised "
+                    "to provide a directional RESEARCH VIEW on the stock the user asked about. "
+                    "This is general research opinion, not personal financial advice.\n"
+                    "REQUIRED reply structure:\n"
+                    "  1. ONE-LINE STANCE — start with: 'Research view: LEAN BUY' / 'NEUTRAL / HOLD' / "
+                    "     'LEAN SELL' (pick one based on the data you have).\n"
+                    "  2. 2-3 REASON BULLETS — cite the actual data (TA signal, fundamental score, "
+                    "     recent news, regime). Be specific. Numbers > words.\n"
+                    "  3. Price snapshot — {Company} ({TICKER}): $X.XX · Exchange · price_label, "
+                    "     Open/High/Low/Vol line, Change ±X (±X%).\n"
+                    "  4. End: '⚠️ Not financial advice — general research view only.'\n"
+                    "DO NOT refuse. DO NOT say 'I cannot give advice'. DO NOT add extra disclaimers."
+                )
+            elif eff_level == "LIGHT" and is_advice_topic:
+                _level_addendum = (
+                    "\n\nSENSITIVITY LEVEL = LIGHT (this turn).\n"
+                    "Provide a brief MARKET-CONTEXT take (lean bullish / neutral / lean bearish "
+                    "framing) for the ticker asked about, based on the data you have. Keep it "
+                    "informational, not directive. One short sentence of stance, one factual "
+                    "supporting line, then the price snapshot. End with: "
+                    "'⚠️ Not financial advice — general info only.' "
+                    "DO NOT refuse the question."
+                )
+
         if _blocked:
             classification = (_gate.get("classification") or "").lower()
-            is_advice_on_stock = (classification == "advice" and ticker.upper() != "COPILOT")
-
-            if is_advice_on_stock:
+            cited_control_ids = {
+                (c.get("control_id") or "").upper()
+                for c in (_gate.get("citations") or [])
+            }
+            # Financial-advice block detection — use BOTH the gate's
+            # classification label AND the cited control IDs. The gate may
+            # label as advice / recommendation / personal_advice / etc.,
+            # and even if the label is missing, certain control IDs always
+            # mean "user asked for stock advice":
+            #   ASIC.CORP_ACT_912A  (s912A efficient/honest/fair)
+            #   ASIC.RG274_DDO_TMD  (Design & Distribution Obligations)
+            #   AFSL.BEST_INTERESTS (s961B Best Interests Duty)
+            #   FINRA.COMM          (customer communications)
+            advice_classifications = {
+                "advice", "recommendation", "personal_advice",
+                "investment_advice", "financial_advice",
+            }
+            advice_control_ids = {
+                "ASIC.CORP_ACT_912A", "ASIC.RG274_DDO_TMD",
+                "AFSL.BEST_INTERESTS", "FINRA.COMM",
+            }
+            is_financial_advice = (
+                classification in advice_classifications
+                or bool(cited_control_ids & advice_control_ids)
+            )
+            # We give factual fallback for ANY financial-advice block — even
+            # from the global Copilot, even without a page ticker. The LLM
+            # extracts the ticker from the user's message and answers it.
+            if is_financial_advice:
                 # Stock-specific advice block: stream a short lead-in and let
                 # the LLM run with a factual-only constraint so the user still
                 # gets price/news on the ticker they asked about.
@@ -928,6 +1003,10 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
         # Append governance block constraint (if any) to the system prompt
         if _block_constraint:
             system_text = (system_text + _block_constraint) if system_text else _block_constraint
+        # Level-specific addendum (PERMISSIVE/LIGHT authorise opinion; STRICT/LOCKDOWN
+        # are handled via the block path above + post-LLM verdict mapping).
+        if _level_addendum:
+            system_text = (system_text + _level_addendum) if system_text else _level_addendum
         if system_text:
             payload["systemInstruction"] = {"parts": [{"text": system_text}]}
 
