@@ -1200,6 +1200,132 @@ async def fundamental_screener(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# GET /agent/governance/coach-report — "what would have been blocked at <level>"
+# ══════════════════════════════════════════════════════════════════════════════
+# This is the demo-grade Compliance Coach leave-behind. Aggregates
+# fct_ai_guardrail_decision rows over a date range and reports — for a
+# hypothetical target Sensitivity Level — how many chat turns would have
+# tripped a block that the current dial setting let through.
+#
+# Buyers screenshot this for their CRO / CISO / AFSL renewal evidence pack.
+#
+# Query params:
+#   tenant_slug   default "stockdatapai"
+#   target_level  PERMISSIVE | LIGHT | BALANCED | STRICT | LOCKDOWN  (default STRICT)
+#   from_date     YYYY-MM-DD  (default 7 days ago)
+#   to_date       YYYY-MM-DD  (default today)
+
+@app.get("/agent/governance/coach-report")
+async def governance_coach_report(
+    tenant_slug: str = "stockdatapai",
+    target_level: str = "STRICT",
+    from_date: Optional[str] = None,
+    to_date:   Optional[str] = None,
+):
+    """Compliance Coach — would-have-been-blocked report for a date range."""
+    try:
+        from datetime import datetime, timedelta
+        import psycopg2
+        import psycopg2.extras
+
+        # Date range defaults: last 7 days
+        end = datetime.fromisoformat(to_date) if to_date else datetime.utcnow()
+        start = datetime.fromisoformat(from_date) if from_date else (end - timedelta(days=7))
+
+        # The same level→verdict map we use in the gate. Mirrors guardrail_bridge._LEVEL_VERDICT_MAP.
+        LEVEL_BLOCKS = {
+            "PERMISSIVE": {"escalate"},
+            "LIGHT":      {"escalate"},
+            "BALANCED":   {"block", "escalate"},
+            "STRICT":     {"block", "escalate", "allow_with_conditions"},
+            "LOCKDOWN":   {"block", "escalate", "allow_with_conditions", "allow"},
+        }
+        target = target_level.upper()
+        would_block_set = LEVEL_BLOCKS.get(target, LEVEL_BLOCKS["STRICT"])
+
+        # Connect to framework_db (where fct_ai_guardrail_decision lives)
+        conn = psycopg2.connect(
+            host=os.environ.get("FRAMEWORK_DB_HOST", "localhost"),
+            port=int(os.environ.get("FRAMEWORK_DB_PORT", "5433")),
+            user=os.environ.get("FRAMEWORK_DB_USER", "postgres"),
+            password=os.environ.get("FRAMEWORK_DB_PASSWORD", "postgres"),
+            dbname=os.environ.get("FRAMEWORK_DB_NAME", "datapai_auth_db"),
+        )
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                # 1. Total turns + verdict distribution
+                cur.execute("""
+                    SELECT verdict,
+                           -- Pre-dial logs have no raw_verdict stored; treat the
+                           -- effective verdict as catalog truth for those rows
+                           -- (the dial wasn't applied yet, so verdict == raw).
+                           COALESCE(NULLIF(raw_gate_json->>'raw_verdict',''), verdict) AS raw_verdict,
+                           COALESCE(NULLIF(raw_gate_json->>'sensitivity_level',''),'BALANCED') AS level_applied,
+                           classification,
+                           COUNT(*) AS n
+                    FROM datapai.fct_ai_guardrail_decision
+                    WHERE ts BETWEEN %s AND %s
+                    GROUP BY 1, 2, 3, 4
+                    ORDER BY n DESC
+                """, (start, end))
+                rows = [dict(r) for r in cur.fetchall()]
+        finally:
+            conn.close()
+
+        total_turns      = sum(r["n"] for r in rows)
+        blocked_now      = sum(r["n"] for r in rows if r["verdict"] in ("block", "escalate"))
+        would_block_at   = sum(r["n"] for r in rows if r["raw_verdict"] in would_block_set)
+        net_added        = max(0, would_block_at - blocked_now)
+        pct_added        = round(100.0 * net_added / total_turns, 1) if total_turns else 0.0
+
+        # Top classifications among "would have blocked"
+        by_class: Dict[str, int] = {}
+        for r in rows:
+            if r["raw_verdict"] in would_block_set:
+                key = r["classification"] or "unspecified"
+                by_class[key] = by_class.get(key, 0) + r["n"]
+        top_classes = sorted(by_class.items(), key=lambda kv: -kv[1])[:5]
+
+        # Level distribution (what the dial was set to)
+        by_level: Dict[str, int] = {}
+        for r in rows:
+            lvl = r["level_applied"] or "BALANCED"
+            by_level[lvl] = by_level.get(lvl, 0) + r["n"]
+
+        return {
+            "ok": True,
+            "tenant_slug": tenant_slug,
+            "window": {"from": start.isoformat(), "to": end.isoformat()},
+            "target_level": target,
+            "summary": {
+                "total_turns":            total_turns,
+                "blocked_at_current":     blocked_now,
+                "would_block_at_target":  would_block_at,
+                "net_added_blocks":       net_added,
+                "pct_of_traffic_added":   pct_added,
+            },
+            "level_distribution": by_level,
+            "top_categories_would_block": [
+                {"classification": k, "count": v} for k, v in top_classes
+            ],
+            "breakdown_sample": rows[:25],
+            "narrative": (
+                f"Over the {(end - start).days} days reviewed, the chat gate handled "
+                f"{total_turns} turns. At the current dial setting, {blocked_now} were "
+                f"refused with a citation. If the dial were set to {target}, an additional "
+                f"{net_added} turns ({pct_added}% of traffic) would have been refused — "
+                f"primarily in the categories listed below. The audit trail captured the "
+                f"catalog evaluation for every turn regardless of dial setting, so an AFSL "
+                f"renewal evidence pack reproducing posture at any past date is a single "
+                f"SQL query."
+            ),
+        }
+    except Exception as exc:
+        logger.exception("[/agent/governance/coach-report] Unexpected error")
+        return {"ok": False, "error": str(exc)}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # GET /agent/index-overview  — Compact summary of all global market indexes
 # ══════════════════════════════════════════════════════════════════════════════
 

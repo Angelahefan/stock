@@ -749,12 +749,33 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
         if _explicit_level:
             _explicit_level = normalise_level(_explicit_level)
 
+        # Per-surface / per-segment scoping. URL query params override request
+        # body which overrides defaults. Lets the demo show:
+        #   ?surface=marketing_chat&segment=retail     → permissive marketing
+        #   ?surface=trading_signals&segment=retail    → strict signals
+        # Without a tenant-level row for that surface, the resolver falls back
+        # through surface-default → tenant-default → global default.
+        _surface = (
+            request.query_params.get("surface")
+            or getattr(req, "surface_key", None)
+            or "default"
+        )
+        _segment = (
+            request.query_params.get("segment")
+            or getattr(req, "segment_key", None)
+            or "default"
+        )
+        _tenant = (
+            request.query_params.get("tenant")
+            or getattr(req, "tenant_slug", None)
+            or "stockdatapai"
+        )
         _gate_meta = {
             "domain": "stock", "ticker": ticker, "exchange": exchange,
             "user_id": req.user_id,
-            "tenant_slug": "stockdatapai",         # Phase 2: derive from request host / API key
-            "surface_key": "default",              # Phase 2: ticker page / global copilot / watchlist
-            "segment_key": "default",              # Phase 2: derive from user plan (retail/wholesale/vip)
+            "tenant_slug": _tenant,
+            "surface_key": _surface,
+            "segment_key": _segment,
         }
         if _explicit_level:
             _gate_meta["sensitivity_level"] = _explicit_level
