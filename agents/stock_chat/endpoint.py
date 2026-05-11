@@ -733,19 +733,32 @@ async def stock_chat_stream(req: ChatRequest, request: Request):
         # citations live. Fail-open if module unavailable (availability > demo).
         from .guardrail_bridge import run_gate_sync, governance_sse_event, footer_markdown, persist_decision, normalise_level
         # Sensitivity Dial — customer-tunable governance strictness.
-        # Resolution order: (1) explicit URL query param ?level=...
-        # (2) request body field, (3) BALANCED default. Per-tenant config
-        # tables come in Phase 2; for now this lets us flip live in the demo.
-        _level = normalise_level(
+        # Resolution order (highest precedence first):
+        #   1. explicit URL ?level= (demo override, lets us flip live)
+        #   2. request body field
+        #   3. DB lookup against datapai.ai_governance_policy by tenant
+        #   4. hardcoded BALANCED fallback (only if DB is unreachable too)
+        # We pass `level` ONLY when explicitly set — None lets run_gate_sync
+        # resolve from DB so customers who configured STRICT/LOCKDOWN actually
+        # get it without re-deploying.
+        _explicit_level: Optional[str] = (
             request.query_params.get("level")
             or getattr(req, "sensitivity_level", None)
-            or "BALANCED"
+            or None
         )
+        if _explicit_level:
+            _explicit_level = normalise_level(_explicit_level)
+
         _gate_meta = {
             "domain": "stock", "ticker": ticker, "exchange": exchange,
-            "user_id": req.user_id, "sensitivity_level": _level,
+            "user_id": req.user_id,
+            "tenant_slug": "stockdatapai",         # Phase 2: derive from request host / API key
+            "surface_key": "default",              # Phase 2: ticker page / global copilot / watchlist
+            "segment_key": "default",              # Phase 2: derive from user plan (retail/wholesale/vip)
         }
-        _gate = run_gate_sync(message=req.message, metadata=_gate_meta, level=_level)
+        if _explicit_level:
+            _gate_meta["sensitivity_level"] = _explicit_level
+        _gate = run_gate_sync(message=req.message, metadata=_gate_meta, level=_explicit_level)
         # Write-once audit evidence — never blocks the turn; ERROR-level log on failure.
         persist_decision(
             _gate,

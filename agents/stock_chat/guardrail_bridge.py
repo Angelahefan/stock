@@ -104,6 +104,93 @@ def normalise_level(level: Optional[str]) -> str:
     return lv if lv in _LEVELS else "BALANCED"
 
 
+# ─── DB-backed tenant policy resolution (5-min cache, fail-open) ────────────
+_POLICY_CACHE: Dict[str, Any] = {"value": {}, "expires_at": 0.0}
+_POLICY_TTL_S = int(os.environ.get("GOVERNANCE_POLICY_TTL_S", "300"))
+
+
+def _load_tenant_policies() -> Dict[tuple, dict]:
+    """Load active policies from datapai.ai_governance_policy in framework_db.
+
+    Returns: { (tenant_slug, surface_key, segment_key): policy_row_dict }
+
+    Cached 5 min. Fail-open: if DB unavailable, returns {} and the call site
+    falls back to the explicit `level` arg or BALANCED default. Never blocks
+    chat availability over a config-DB hiccup.
+    """
+    now = time.time()
+    if _POLICY_CACHE["value"] and now < _POLICY_CACHE["expires_at"]:
+        return _POLICY_CACHE["value"]
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host=os.environ.get("FRAMEWORK_DB_HOST", "localhost"),
+            port=int(os.environ.get("FRAMEWORK_DB_PORT", "5433")),
+            user=os.environ.get("FRAMEWORK_DB_USER", "postgres"),
+            password=os.environ.get("FRAMEWORK_DB_PASSWORD", "postgres"),
+            dbname=os.environ.get("FRAMEWORK_DB_NAME", "datapai_auth_db"),
+        )
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT tenant_slug, surface_key, segment_key,
+                           level, coach_mode, audit_visibility, overrides_json
+                    FROM datapai.ai_governance_policy
+                    WHERE is_active = TRUE
+                      AND (effective_from IS NULL OR effective_from <= NOW())
+                      AND (effective_until IS NULL OR effective_until >  NOW())
+                """)
+                out = {}
+                for tenant, surface, segment, lvl, coach, vis, overrides in cur.fetchall():
+                    out[(tenant, surface, segment)] = {
+                        "level": lvl, "coach_mode": coach,
+                        "audit_visibility": vis, "overrides": overrides or {},
+                    }
+        conn.close()
+        _POLICY_CACHE["value"] = out
+        _POLICY_CACHE["expires_at"] = now + _POLICY_TTL_S
+        return out
+    except Exception as e:
+        log.warning("ai_governance_policy load failed (fail-open): %s", e)
+        # Don't poison cache — retry next call.
+        return _POLICY_CACHE["value"] or {}
+
+
+def resolve_tenant_policy(
+    tenant_slug: Optional[str] = None,
+    surface_key: Optional[str] = None,
+    segment_key: Optional[str] = None,
+) -> dict:
+    """Resolve effective policy for (tenant, surface, segment) with fallback.
+
+    Lookup order:
+      1. exact (tenant, surface, segment)
+      2. (tenant, surface, "default")
+      3. (tenant, "default", "default")
+      4. ("stockdatapai", "default", "default")  # global default tenant
+      5. hardcoded BALANCED fallback
+    Returns dict: {level, coach_mode, audit_visibility, overrides, source}
+    """
+    policies = _load_tenant_policies()
+    tenant = (tenant_slug or "stockdatapai").lower()
+    surface = (surface_key or "default").lower()
+    segment = (segment_key or "default").lower()
+
+    for key, src_tag in [
+        ((tenant, surface, segment), "exact"),
+        ((tenant, surface, "default"), "surface-default-segment"),
+        ((tenant, "default", "default"), "tenant-default"),
+        (("stockdatapai", "default", "default"), "global-default"),
+    ]:
+        row = policies.get(key)
+        if row:
+            return {**row, "source": src_tag, "matched_key": key}
+
+    return {"level": "BALANCED", "coach_mode": False,
+            "audit_visibility": "footer_visible",
+            "overrides": {}, "source": "hardcoded-fallback"}
+
+
 def apply_sensitivity_level(gate_result: Optional[dict], level: str) -> Optional[dict]:
     """Transform the raw gate verdict according to the customer's chosen level.
 
@@ -134,15 +221,34 @@ def apply_sensitivity_level(gate_result: Optional[dict], level: str) -> Optional
 
 def run_gate_sync(message: str, metadata: dict, *, level: Optional[str] = None) -> Optional[dict]:
     """Returns a dict: {verdict, raw_verdict, sensitivity_level, risk_tier,
-    classification, citations, refusal, conditions, gate_latency_ms} or
-    None if the guardrail module isn't importable (fail-open for availability).
+    classification, citations, refusal, conditions, gate_latency_ms,
+    policy_source} or None if the guardrail module isn't importable
+    (fail-open for availability).
 
-    `level` controls the Sensitivity Dial — see _LEVEL_VERDICT_MAP above.
+    `level` resolution order (highest precedence first):
+      1. explicit `level` kwarg (demo URL ?level= or request body)
+      2. DB policy row for (tenant_slug, surface_key, segment_key) — read
+         from metadata.{tenant_slug, surface_key, segment_key}
+      3. DB policy row fallback chain (surface-default, tenant-default,
+         global-default) — see resolve_tenant_policy()
+      4. hardcoded BALANCED
     """
     run_gate, Verdict, RouterChatClient = _safe_import()
     if not run_gate:
         return None
     try:
+        # Resolve effective level + audit visibility from DB if not overridden.
+        if level:
+            effective_level = normalise_level(level)
+            policy = {"level": effective_level, "source": "explicit-arg"}
+        else:
+            policy = resolve_tenant_policy(
+                tenant_slug=metadata.get("tenant_slug"),
+                surface_key=metadata.get("surface_key"),
+                segment_key=metadata.get("segment_key"),
+            )
+            effective_level = normalise_level(policy.get("level"))
+
         client = RouterChatClient()
 
         def _chat(messages, temperature=0.0):
@@ -170,8 +276,11 @@ def run_gate_sync(message: str, metadata: dict, *, level: Optional[str] = None) 
                 }
                 for c in decision.citations
             ],
+            "policy_source": policy.get("source"),
+            "audit_visibility": policy.get("audit_visibility", "footer_visible"),
+            "coach_mode": policy.get("coach_mode", False),
         }
-        return apply_sensitivity_level(raw, level)
+        return apply_sensitivity_level(raw, effective_level)
     except Exception as e:
         log.exception("gate invocation failed: %s", e)
         return None
