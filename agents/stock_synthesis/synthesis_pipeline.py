@@ -352,28 +352,93 @@ async def run_synthesis(
     )
 
 
-def _extract_json(text: str) -> Optional[dict]:
-    """Try to extract JSON from LLM response (may have markdown wrapping)."""
+def _extract_json(text) -> Optional[dict]:
+    """Extract a JSON object from an LLM reply.
+
+    Defensive: accepts either a string OR the {role,content,model,usage}
+    dict that RouterChatClient.chat() returns (this was the silent killer
+    that turned every fallback into HOLD/0.3/LOW for 2 months — the
+    fallback re.search() threw TypeError because we passed a dict).
+
+    Tries, in order:
+      1. Already-parsed dict → return as-is
+      2. Direct json.loads
+      3. ```json ... ``` markdown block
+      4. ``` ... ``` markdown block (no language tag)
+      5. Greedy outermost { ... } match
+      6. Last-resort: synthesise an object from `"key": "value"` pairs
+         when the LLM forgot the wrapping braces (the literal symptom
+         we saw: PM emitted `\n    "direction": "BUY", ...`).
+    Returns None if nothing parses.
+    """
     import re
-    # Try direct parse
+
+    # Coerce to string — accept dict {content:...}, list of blocks, raw str
+    if text is None:
+        return None
+    if isinstance(text, dict):
+        if "content" in text and isinstance(text["content"], str):
+            text = text["content"]
+        else:
+            # Already-parsed JSON-looking dict — return only if it looks like
+            # a recommendation envelope.
+            if "direction" in text:
+                return text
+            return None
+    if not isinstance(text, str):
+        try:
+            text = str(text)
+        except Exception:
+            return None
+
+    raw = text.strip()
+
+    # 1. Direct json.loads
     try:
-        return json.loads(text)
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return parsed
     except (json.JSONDecodeError, TypeError):
         pass
-    # Try extracting from markdown code block
-    match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-    if match:
+
+    # 2. ```json ... ``` markdown block
+    m = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw, re.IGNORECASE)
+    if m:
         try:
-            return json.loads(match.group(1))
+            return json.loads(m.group(1).strip())
         except json.JSONDecodeError:
             pass
-    # Try finding first { ... }
-    match = re.search(r"\{[\s\S]*\}", text)
-    if match:
+
+    # 3. Greedy outermost { ... }
+    m = re.search(r"\{[\s\S]*\}", raw)
+    if m:
         try:
-            return json.loads(match.group(0))
+            return json.loads(m.group(0))
         except json.JSONDecodeError:
-            pass
+            # Try trimming trailing commas then re-parse
+            cleaned = re.sub(r",\s*(\}|\])", r"\1", m.group(0))
+            try:
+                return json.loads(cleaned)
+            except json.JSONDecodeError:
+                pass
+
+    # 4. Last resort — bare `"key": "value"` pairs without enclosing braces.
+    #    Symptom seen in production: PM emitted lines like
+    #        \n    "direction": "HOLD",
+    #        \n    "confidence": 0.5,
+    #    Build a dict from the first set of quoted-key pairs we can find.
+    pair_pattern = re.compile(r'"(direction|confidence|conviction|thesis|what_bulls_say|what_bears_say|key_risk)"\s*:\s*("(?:[^"\\]|\\.)*"|[\d.]+|true|false|null)')
+    pairs = pair_pattern.findall(raw)
+    if pairs:
+        out: dict = {}
+        for key, val in pairs:
+            try:
+                out[key] = json.loads(val)
+            except json.JSONDecodeError:
+                continue
+        if out.get("direction"):
+            return out
+
     return None
 
 
@@ -407,10 +472,20 @@ async def _fallback_synthesis(
         response = client.chat(
             messages=[{"role": "user", "content": prompt}],
         )
-        recommendation = _extract_json(response)
+        # RouterChatClient.chat() returns {role, content, model, usage, ...}
+        # — NOT a bare string. Extract content for both JSON parsing and the
+        # debate-point preview. Previously we passed the dict to _extract_json
+        # and to str-slicing, throwing TypeError and silently producing the
+        # HOLD/0.3/LOW default for every ticker.
+        content = ""
+        if isinstance(response, dict):
+            content = str(response.get("content") or "")
+        elif isinstance(response, str):
+            content = response
+        recommendation = _extract_json(content)
         debate_points = [DebatePoint(
             agent="portfolio_manager_fallback",
-            argument=response[:500] if response else "No response",
+            argument=content[:500] if content else "No response",
         )]
         return recommendation, debate_points
     except Exception as exc:
