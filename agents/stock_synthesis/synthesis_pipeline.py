@@ -67,7 +67,7 @@ def _build_situation_context(ticker: str, exchange: str, signals: list) -> str:
     return ", ".join(parts)
 
 # LLM config — uses the same RouterChatClient pattern as other agents
-MODEL = os.getenv("SYNTHESIS_MODEL", "gpt-4o-mini")
+MODEL = os.getenv("SYNTHESIS_MODEL", "gemini-2.5-flash")
 MAX_DEBATE_ROUNDS = 2  # Bull → Bear → Risk → PM (2 rounds = 8 messages)
 
 
@@ -152,7 +152,42 @@ async def run_synthesis(
         pm_lessons = memory.format_lessons_for_prompt("portfolio_manager", situation, n_memories=2, n_best=2)
 
         # Create agents with memory-injected prompts
-        llm_config = {"model": use_model, "temperature": 0.3}
+        # Build llm_config in AG2 v0.5+ config_list format so we can route to
+        # the same Gemini provider the chat endpoint + RouterChatClient already
+        # use, instead of AG2 silently falling back to OpenAI's default client
+        # (which needs OPENAI_API_KEY and would explain 2 months of "AG2 debate
+        # failed: ... — falling back" log lines).
+        #
+        # LLM_PRIMARY_PROVIDER drives the choice: google (default), openai,
+        # bedrock. The fallback path (RouterChatClient) follows the same env.
+        _llm_provider = os.environ.get("LLM_PRIMARY_PROVIDER", "google").lower()
+        if _llm_provider == "google":
+            llm_config = {
+                "config_list": [{
+                    "model": use_model,
+                    "api_key": os.environ.get("GOOGLE_API_KEY", ""),
+                    "api_type": "google",
+                }],
+                "temperature": 0.3,
+            }
+        elif _llm_provider == "bedrock":
+            llm_config = {
+                "config_list": [{
+                    "model": use_model,
+                    "aws_region": os.environ.get("BEDROCK_REGION", "ap-southeast-2"),
+                    "api_type": "bedrock",
+                }],
+                "temperature": 0.3,
+            }
+        else:
+            # OpenAI default — original behaviour
+            llm_config = {
+                "config_list": [{
+                    "model": use_model,
+                    "api_key": os.environ.get("OPENAI_API_KEY", ""),
+                }],
+                "temperature": 0.3,
+            }
 
         bull = ConversableAgent(
             name="Bull_Analyst",
