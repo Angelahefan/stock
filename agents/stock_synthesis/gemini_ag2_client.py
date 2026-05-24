@@ -146,6 +146,13 @@ class GeminiHTTPModelClient:
             "generationConfig": {
                 "temperature": temperature,
                 "maxOutputTokens": int(max_tokens),
+                # CRITICAL 2026-05-24: Gemini 2.5 Flash burns ~500-600 tokens
+                # on internal "thinking" inside the maxOutputTokens budget
+                # BEFORE emitting actual output. Without this, max_tokens=600
+                # left only ~20 tokens for the PM's JSON → consistent truncation
+                # at `"confidence": 0.6` mid-string. Setting thinkingBudget=0
+                # disables thinking so the entire budget is available for output.
+                "thinkingConfig": {"thinkingBudget": 0},
             },
         }
         r = requests.post(url, json=payload, timeout=120)

@@ -199,22 +199,27 @@ async def run_synthesis(
                 "temperature": 0.3,
             }
 
+        # 2026-05-24 v3: tight Bull/Bear/Risk at 200 (≈150 words / 3-4
+        # short sentences). PM at 600 — empirically 400 truncated the JSON
+        # mid-string (PM output stopped at `"confidence` before completing
+        # the schema). 600 fits the 7-field envelope with concise content.
+        # Manager at 100 (rarely speaks).
         bull = ConversableAgent(
             name="Bull_Analyst",
             system_message=BULL_ANALYST_PROMPT.format(past_lessons=bull_lessons),
-            llm_config=_cfg(max_tokens=400),
+            llm_config=_cfg(max_tokens=200),
             human_input_mode="NEVER",
         )
         bear = ConversableAgent(
             name="Bear_Analyst",
             system_message=BEAR_ANALYST_PROMPT.format(past_lessons=bear_lessons),
-            llm_config=_cfg(max_tokens=400),
+            llm_config=_cfg(max_tokens=200),
             human_input_mode="NEVER",
         )
         risk_mgr = ConversableAgent(
             name="Risk_Manager",
             system_message=RISK_MANAGER_PROMPT.format(past_lessons=risk_lessons),
-            llm_config=_cfg(max_tokens=300),
+            llm_config=_cfg(max_tokens=200),
             human_input_mode="NEVER",
         )
         portfolio_mgr = ConversableAgent(
@@ -237,7 +242,7 @@ async def run_synthesis(
         )
         manager = GroupChatManager(
             groupchat=groupchat,
-            llm_config=_cfg(max_tokens=200),  # manager rarely speaks, keep tiny
+            llm_config=_cfg(max_tokens=100),  # manager rarely speaks, keep tiny
         )
 
         # Register the custom Gemini-over-HTTP client on every agent that has
