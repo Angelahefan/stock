@@ -433,3 +433,109 @@ def _asx_fallback_tickers() -> list[str]:
         "ZGL", "ZIP", "ZNO", "ZPT", "ZQT",
     ]
     return [f"{t}.AX" for t in top_asx]
+
+
+def load_synthesis_universe(
+    exchange: str | None = None,
+    max_per_exchange: int = 20,
+    include_watchlists: bool = True,
+) -> list[tuple[str, str]]:
+    """
+    Return the dynamic AG2 synthesis universe — tickers users actually engage with.
+
+    Replaces the previous hardcoded 38-ticker list in the Airflow DAG. Source of
+    truth:
+
+      1. **Landing-page stocks** — `datapai.market_demo_stocks` rows with
+         `display_order <= max_per_exchange`. These are the tickers shown to
+         every visitor of /asx, /us, /vietnam, /hongkong, etc. (NVDA, AAPL,
+         MSFT for US; BHP, CBA, CSL for ASX; 9988 for HKEX; …).
+
+      2. **User watchlists** — `datapai.watchlist.symbol`. Every ticker any
+         user has actively watchlisted. Grows organically with the user base.
+
+    The union is filtered to tickers we have `fundamental_lite` data for (so
+    AG2 actually has signals to debate). Exchange aliases (NASDAQ → US) are
+    normalised so watchlist rows pointing at NASDAQ-tagged tickers land in
+    the US synthesis bucket where their fundamentals live.
+
+    Why this beats a hardcoded list:
+      - New user watchlists AAPL → AI Analyst Call appears tomorrow, no code
+        change, no DAG redeploy.
+      - Admin promotes a stock on the landing page (display_order update) →
+        synthesis picks it up overnight.
+      - Universe contracts when stocks lose featuring (no more wasted LLM
+        spend on tickers no one views).
+
+    Args:
+        exchange: optional exchange filter ('US', 'ASX', 'HOSE', …). None = all.
+        max_per_exchange: cap on landing-page tickers per exchange (default 20).
+        include_watchlists: if False, only landing-page stocks (no user contribs).
+
+    Returns:
+        list of (ticker, exchange) tuples, deduplicated, sorted by (exchange, ticker).
+    """
+    try:
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+        from agents.stock_chat.db import query as db_query
+    except Exception as exc:
+        logger.error("Cannot import db_query — synthesis universe empty: %s", exc)
+        return []
+
+    # NASDAQ → US, NYSE → US (FE sometimes tags watchlist rows with the
+    # underlying exchange, but our analysis tables key on the 'US' alias).
+    exchange_alias_sql = (
+        "CASE WHEN exchange IN ('NASDAQ','NYSE') THEN 'US' ELSE exchange END"
+    )
+
+    sql = f"""
+        WITH wanted AS (
+            -- Source 1: landing-page top-N per exchange
+            SELECT ticker,
+                   {exchange_alias_sql} AS exchange,
+                   'demo' AS source,
+                   display_order AS priority
+            FROM datapai.market_demo_stocks
+            WHERE display_order <= %s
+        """
+    params: list = [max_per_exchange]
+    if include_watchlists:
+        sql += f"""
+            UNION
+            -- Source 2: any ticker any user has watchlisted
+            SELECT symbol AS ticker,
+                   {exchange_alias_sql} AS exchange,
+                   'watchlist' AS source,
+                   0 AS priority
+            FROM datapai.watchlist
+        """
+    sql += """
+        )
+        SELECT DISTINCT w.ticker, w.exchange
+        FROM wanted w
+        JOIN datapai.fundamental_lite f
+          ON f.ticker = w.ticker AND f.exchange = w.exchange
+    """
+    if exchange:
+        sql += " WHERE w.exchange = %s"
+        params.append(exchange)
+    sql += " ORDER BY w.exchange, w.ticker"
+
+    try:
+        rows = db_query(sql, params)
+    except Exception as exc:
+        logger.error("load_synthesis_universe SQL failed: %s", exc)
+        return []
+
+    pairs = [(r["ticker"], r["exchange"]) for r in rows]
+    # Breakdown for logs/observability
+    by_ex: dict[str, int] = {}
+    for _t, ex in pairs:
+        by_ex[ex] = by_ex.get(ex, 0) + 1
+    logger.info(
+        "Synthesis universe resolved: %d tickers across %d exchanges (%s)",
+        len(pairs), len(by_ex),
+        ", ".join(f"{ex}={n}" for ex, n in sorted(by_ex.items(), key=lambda x: -x[1])),
+    )
+    return pairs

@@ -68,14 +68,24 @@ async def run(
 
     await ensure_table()
 
-    # Load tickers
+    # Load tickers — default is the dynamic synthesis universe
+    # (landing-page top-N + all user watchlists, filtered to ones with
+    # fundamental data). See scripts/lib/ticker_loader.py.
     if not tickers:
         try:
-            from scripts.lib.ticker_loader import load_monitored_tickers
-            tickers = load_monitored_tickers(exchange=exchange)
+            from scripts.lib.ticker_loader import load_synthesis_universe
+            # Universe returns (ticker, exchange) pairs; for a single-exchange
+            # batch we just keep tickers.
+            pairs = load_synthesis_universe(exchange=exchange)
+            tickers = [t for (t, _ex) in pairs]
         except Exception as exc:
-            log.warning("Could not load tickers: %s", exc)
-            tickers = []
+            log.warning("load_synthesis_universe failed (%s) — falling back to fundamental_lite", exc)
+            try:
+                from scripts.lib.ticker_loader import load_monitored_tickers
+                tickers = load_monitored_tickers(exchange=exchange)
+            except Exception as exc2:
+                log.warning("Could not load tickers: %s", exc2)
+                tickers = []
 
     if not tickers:
         log.warning("No tickers to process for exchange=%s", exchange)
