@@ -314,6 +314,27 @@ async def run_synthesis(
         else:
             recommendation = None
 
+        # ── Guardrail (2026-05-24) — refuse partial/truncated PM JSON ──
+        # `_extract_json` has a "bare pairs" fallback that matches
+        # `"direction":"BUY"` and `"confidence":0.5` from truncated text and
+        # returns an incomplete dict. We previously silently accepted these
+        # — produced rows with thesis="" and bogus BUY/SELL/HOLD signals
+        # that looked like real decisions. Now: incomplete = treated as
+        # debate failure → fall through to _fallback_synthesis (single LLM)
+        # which always produces a complete recommendation.
+        if recommendation and not _is_complete_recommendation(recommendation):
+            missing = [k for k in ("direction", "thesis", "what_bulls_say",
+                                   "what_bears_say", "key_risk")
+                       if not (recommendation.get(k) or "").strip()]
+            logger.warning(
+                "[%s/%s] PM JSON incomplete (missing: %s) — discarding partial "
+                "recommendation and falling back to single-LLM synthesis. "
+                "PM raw response head: %r",
+                ticker, exchange, ", ".join(missing),
+                (pm_response if pm_messages else "")[:200],
+            )
+            recommendation = None  # force fall-through below
+
     except ImportError:
         logger.warning("AG2/autogen not installed — falling back to single-LLM synthesis")
         recommendation, debate_points = await _fallback_synthesis(
@@ -324,6 +345,18 @@ async def run_synthesis(
         recommendation, debate_points = await _fallback_synthesis(
             ticker, exchange, context, signals_aligned, use_model
         )
+
+    # If AG2 produced no usable recommendation (e.g. incomplete JSON above
+    # set recommendation=None after the try block ran cleanly), try the
+    # single-LLM fallback once.
+    if recommendation is None and debate_points:
+        # debate_points populated → debate ran; only PM JSON was bad. Retry.
+        logger.info("[%s/%s] Retrying via single-LLM synthesis after PM JSON failure", ticker, exchange)
+        recommendation, _fb_points = await _fallback_synthesis(
+            ticker, exchange, context, signals_aligned, use_model
+        )
+        # Keep debate_points from the AG2 run for Reflector; append fallback
+        debate_points.extend(_fb_points or [])
 
     # ── Post-debate Quality + Regime gates (backtest-proven, +~8% win rate) ──
     # Applied to BUY/STRONG_BUY signals only. Demote to HOLD if:
@@ -404,6 +437,29 @@ async def run_synthesis(
     if not signals_aligned:
         source_dirs = [f"{s.source.value}={s.direction.value}" for s in signals]
         disagreement = f"Signals diverge: {', '.join(source_dirs)}"
+
+    # ── Sanity check (2026-05-24) — flag impossible direction flips ──
+    # If TA, FA, and News all agree bearish (SELL/STRONG_SELL) but the LLM
+    # said BUY/STRONG_BUY (or vice versa), that's a near-certain reasoning
+    # error or JSON-parse artefact. Don't silently emit garbage; demote to
+    # HOLD and stamp key_risk so downstream sees the override.
+    _input_dirs = [s.direction for s in signals]
+    _all_bearish = all(d in (SignalDirection.SELL, SignalDirection.STRONG_SELL) for d in _input_dirs) and _input_dirs
+    _all_bullish = all(d in (SignalDirection.BUY, SignalDirection.STRONG_BUY) for d in _input_dirs) and _input_dirs
+    if _all_bearish and direction in (SignalDirection.BUY, SignalDirection.STRONG_BUY):
+        logger.warning("[%s/%s] SANITY OVERRIDE: all signals bearish but LLM said %s → demoting to HOLD",
+                       ticker, exchange, direction.value)
+        direction = SignalDirection.HOLD
+        confidence = min(confidence, 0.4)
+        conviction = "LOW"
+        key_risk = f"[Sanity override] All input signals bearish but PM emitted BUY — flagged as inconsistent. {key_risk}"
+    elif _all_bullish and direction in (SignalDirection.SELL, SignalDirection.STRONG_SELL):
+        logger.warning("[%s/%s] SANITY OVERRIDE: all signals bullish but LLM said %s → demoting to HOLD",
+                       ticker, exchange, direction.value)
+        direction = SignalDirection.HOLD
+        confidence = min(confidence, 0.4)
+        conviction = "LOW"
+        key_risk = f"[Sanity override] All input signals bullish but PM emitted SELL — flagged as inconsistent. {key_risk}"
 
     # ── Log debate to DB for future reflection ──
     try:
@@ -550,6 +606,31 @@ def _extract_json(text) -> Optional[dict]:
             return out
 
     return None
+
+
+def _is_complete_recommendation(rec: dict) -> bool:
+    """
+    A PM recommendation is "complete" only if direction is a recognized
+    enum value AND the three narrative fields (thesis, what_bulls_say,
+    what_bears_say, key_risk) have non-trivial content (>=20 chars each).
+
+    Why this matters: Gemini 2.5's thinking budget can truncate the JSON
+    mid-string. Our `_extract_json` has a bare-pairs fallback that picks up
+    `"direction":"BUY"` from `{"direction":"BUY","confidence":0.5,` even
+    though the rest of the JSON never came. Returning such a partial dict
+    produces convincing-looking BUY/SELL signals with empty thesis — exactly
+    the kind of silent garbage that pollutes win-rate metrics.
+    """
+    if not isinstance(rec, dict):
+        return False
+    direction = (rec.get("direction") or "").upper().strip()
+    if direction not in ("STRONG_BUY", "BUY", "HOLD", "SELL", "STRONG_SELL"):
+        return False
+    for narrative_field in ("thesis", "what_bulls_say", "what_bears_say", "key_risk"):
+        val = (rec.get(narrative_field) or "").strip()
+        if len(val) < 20:
+            return False
+    return True
 
 
 async def _get_quality_for_gate(ticker: str, exchange: str) -> Optional[dict]:
