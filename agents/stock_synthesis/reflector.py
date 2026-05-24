@@ -193,7 +193,7 @@ class Reflector:
             "SELECT ticker, exchange, debate_date, direction, confidence, thesis, "
             "bull_arguments, bear_arguments, risk_arguments, pm_arguments, "
             "input_signals, regime, quality_tier "
-            "FROM datapai.sys_agent_debate_log WHERE id = %s",
+            "FROM datapai.sys_agent_debate_log_full WHERE id = %s",
             (debate_id,),
         )
         row = cur.fetchone()
@@ -318,7 +318,7 @@ class Reflector:
         cur = self.memory._conn.cursor()
         cur.execute(
             "SELECT id, ticker, exchange, debate_date, direction "
-            "FROM datapai.sys_agent_debate_log "
+            "FROM datapai.sys_agent_debate_log_full "
             "WHERE was_correct IS NULL AND debate_date <= %s "
             "ORDER BY debate_date",
             (cutoff,),

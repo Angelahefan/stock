@@ -332,13 +332,21 @@ class AgentMemoryStore:
         try:
             import json
             cur = self._conn.cursor()
+            # NOTE 2026-05-24: cannot use RETURNING via postgres_fdw because the
+            # foreign table (per migration 044) intentionally omits `id` and
+            # `created_at` — postgres_fdw was sending NULL for both and the
+            # remote NOT NULL on id was killing every insert. We now do a
+            # 2-step write: blind INSERT, then SELECT id back by composite
+            # match. The (ticker, exchange, debate_date, debate_type) tuple
+            # is effectively unique per second so ORDER BY id DESC LIMIT 1
+            # picks the row we just inserted with very high reliability.
             cur.execute(
                 "INSERT INTO datapai.sys_agent_debate_log "
                 "(ticker, exchange, debate_date, debate_type, input_signals, "
                 "bull_arguments, bear_arguments, risk_arguments, pm_arguments, "
                 "direction, confidence, thesis, recommendation, "
                 "regime, quality_tier, conflict_level, agent_scores) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (ticker, exchange, debate_date, debate_type,
                  json.dumps(input_signals),
                  bull_arguments or [], bear_arguments or [],
@@ -347,9 +355,24 @@ class AgentMemoryStore:
                  regime, quality_tier, conflict_level,
                  json.dumps(agent_scores or {})),
             )
-            debate_id = cur.fetchone()[0]
+            # Fetch back the auto-generated id via composite match.
+            # NOTE: we query the *_full* foreign table (24 cols, exposes id +
+            # created_at). The write-side foreign table (22 cols) is used
+            # purely for the INSERT above to avoid postgres_fdw sending NULL
+            # for id. See migrations/044_fdw_drop_id_from_debate_log.sql.
+            cur.execute(
+                "SELECT id FROM datapai.sys_agent_debate_log_full "
+                "WHERE ticker=%s AND exchange=%s AND debate_date=%s AND debate_type=%s "
+                "ORDER BY id DESC LIMIT 1",
+                (ticker, exchange, debate_date, debate_type),
+            )
+            row = cur.fetchone()
             cur.close()
-            logger.info("Logged debate #%d for %s/%s", debate_id, ticker, exchange)
+            debate_id = row[0] if row else None
+            if debate_id is not None:
+                logger.info("Logged debate #%d for %s/%s", debate_id, ticker, exchange)
+            else:
+                logger.warning("Logged debate for %s/%s but id readback failed", ticker, exchange)
             return debate_id
         except Exception as exc:
             logger.error("Failed to log debate: %s", exc)
@@ -370,8 +393,10 @@ class AgentMemoryStore:
 
         try:
             cur = self._conn.cursor()
+            # UPDATE WHERE id=... needs the *_full* foreign table since the
+            # write-side one (used for INSERT) doesn't expose `id`.
             cur.execute(
-                "UPDATE datapai.sys_agent_debate_log SET "
+                "UPDATE datapai.sys_agent_debate_log_full SET "
                 "actual_return_7d = COALESCE(%s, actual_return_7d), "
                 "actual_return_30d = COALESCE(%s, actual_return_30d), "
                 "actual_return_90d = COALESCE(%s, actual_return_90d), "
