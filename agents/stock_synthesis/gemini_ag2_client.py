@@ -45,9 +45,19 @@ logger = logging.getLogger(__name__)
 
 
 # ── llm_config helper ────────────────────────────────────────────────────────
-def build_llm_config(model: str = "gemini-2.5-flash", temperature: float = 0.3) -> Dict[str, Any]:
+def build_llm_config(
+    model: str = "gemini-2.5-flash",
+    temperature: float = 0.3,
+    max_tokens: int = 800,
+) -> Dict[str, Any]:
     """
     Build an AG2 llm_config that routes through GeminiHTTPModelClient.
+
+    max_tokens
+        Hard cap on Gemini response length (maxOutputTokens). Without this,
+        agents emit 7-30K-char essays per turn — context blows up quadratically
+        and a single ticker takes ~5 minutes. With max_tokens=800 (~600 words)
+        each turn drops to 10-15s and total run is ~30-60s.
 
     Note: NEVER use 'gemini-2.5-flash-lite' for function-call / multi-turn
     chats — it returns silent empty responses after the first tool round.
@@ -57,6 +67,7 @@ def build_llm_config(model: str = "gemini-2.5-flash", temperature: float = 0.3) 
             "model": model,
             "model_client_cls": "GeminiHTTPModelClient",
             "api_key": os.environ.get("GOOGLE_API_KEY", ""),
+            "max_tokens": max_tokens,
         }],
         "temperature": temperature,
         "cache_seed": None,  # disable AG2's disk cache; we rely on CostGuard upstream
@@ -85,17 +96,24 @@ class GeminiHTTPModelClient:
         self.model_name = config.get("model", "gemini-2.5-flash")
         self._client = GoogleChatClient(model=self.model_name)
         self._default_temperature = config.get("temperature", 0.3)
+        self._max_tokens = int(config.get("max_tokens") or 0) or None
 
     # ── AG2 calls this once per LLM round ────────────────────────────────────
     def create(self, params: Dict[str, Any]) -> Any:
         messages: List[Dict[str, str]] = params.get("messages") or []
         temperature = params.get("temperature", self._default_temperature)
+        max_tokens = int(params.get("max_tokens") or 0) or self._max_tokens
 
         try:
-            raw = self._client.chat(messages=messages, temperature=temperature)
+            if max_tokens:
+                # Direct HTTP path with maxOutputTokens — GoogleChatClient's
+                # chat() doesn't expose this and we don't want to fork the
+                # shared platform-be file. Keep payload shape identical.
+                raw = self._chat_with_max_tokens(messages, temperature, max_tokens)
+            else:
+                raw = self._client.chat(messages=messages, temperature=temperature)
         except Exception as exc:
             logger.error("GeminiHTTPModelClient.chat() failed: %s", str(exc)[:200])
-            # Return an empty-but-valid response so AG2 doesn't crash mid-debate.
             return _build_response(content="", model=self.model_name)
 
         content = raw.get("content", "") if isinstance(raw, dict) else str(raw or "")
@@ -106,6 +124,48 @@ class GeminiHTTPModelClient:
             prompt_tokens=int(usage.get("prompt_tokens", 0) or 0),
             completion_tokens=int(usage.get("completion_tokens", 0) or 0),
         )
+
+    # ── Internal: direct Gemini HTTP call with maxOutputTokens ───────────────
+    def _chat_with_max_tokens(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+    ) -> Dict[str, Any]:
+        """
+        Mirror of GoogleChatClient.chat()'s HTTP shape with maxOutputTokens
+        added to generationConfig. We reuse _client.api_key, model_name,
+        base_url, and _build_contents() so we stay in sync with any future
+        upstream changes to the message-format transform.
+        """
+        import requests
+        url = (f"{self._client.base_url}/models/{self.model_name}"
+               f":generateContent?key={self._client.api_key}")
+        payload = {
+            "contents": self._client._build_contents(messages),
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": int(max_tokens),
+            },
+        }
+        r = requests.post(url, json=payload, timeout=120)
+        r.raise_for_status()
+        data = r.json()
+        try:
+            text = data["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError):
+            text = ""
+        usage = data.get("usageMetadata", {}) or {}
+        return {
+            "role": "assistant",
+            "content": text,
+            "model": self.model_name,
+            "usage": {
+                "prompt_tokens":     usage.get("promptTokenCount", 0),
+                "completion_tokens": usage.get("candidatesTokenCount", 0),
+                "total_tokens":      usage.get("totalTokenCount", 0),
+            },
+        }
 
     # ── AG2 extracts assistant text via this ─────────────────────────────────
     def message_retrieval(self, response: Any) -> List[str]:

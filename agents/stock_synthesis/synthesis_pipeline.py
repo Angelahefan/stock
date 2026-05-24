@@ -68,7 +68,13 @@ def _build_situation_context(ticker: str, exchange: str, signals: list) -> str:
 
 # LLM config — uses the same RouterChatClient pattern as other agents
 MODEL = os.getenv("SYNTHESIS_MODEL", "gemini-2.5-flash")
-MAX_DEBATE_ROUNDS = 2  # Bull → Bear → Risk → PM (2 rounds = 8 messages)
+MAX_DEBATE_ROUNDS = 1  # Bull → Bear → Risk → PM (1 round = 4 messages, ~2-4 min/ticker)
+# 2026-05-24: trimmed from 2 → 1. With Gemini latency a 2-round debate took
+# 4-9 min/ticker and the nightly 50-ticker batch ran ~6h, hitting timeouts.
+# 1 round = single pass: each role speaks once based on initial signals.
+# We lose the PM "refinement after hearing Bull/Bear iterate" round; the
+# trade-off is throughput. Reflector compounding gives us iterative
+# improvement over time which is more valuable than per-debate iteration.
 
 
 def _format_signals_context(
@@ -157,30 +163,38 @@ async def run_synthesis(
         # pinned to 3.8.20 → ancient SDK missing `Content` symbol → silent
         # fallback for 2 months). The custom client wraps GoogleChatClient
         # (pure HTTP — same path the chat bot uses successfully every day).
+        # Build llm_config — per-persona max_tokens caps to stop verbose
+        # essay-style responses. Empirically (2026-05-24 instrumentation) the
+        # uncapped run took 297s for 15 calls with outputs of 7-30K chars.
+        # Capping at 400/400/300/600 tokens (~300/300/225/450 words) trims
+        # generation latency from 20-35s/call to 5-12s/call.
         _llm_provider = os.environ.get("LLM_PRIMARY_PROVIDER", "google").lower()
         _custom_client_cls = None  # set when we need to register_model_client
-        if _llm_provider == "google":
-            from agents.stock_synthesis.gemini_ag2_client import (
-                GeminiHTTPModelClient,
-                build_llm_config,
-            )
-            llm_config = build_llm_config(model=use_model, temperature=0.3)
-            _custom_client_cls = GeminiHTTPModelClient
-        elif _llm_provider == "bedrock":
-            llm_config = {
-                "config_list": [{
-                    "model": use_model,
-                    "aws_region": os.environ.get("BEDROCK_REGION", "ap-southeast-2"),
-                    "api_type": "bedrock",
-                }],
-                "temperature": 0.3,
-            }
-        else:
-            # OpenAI default — original behaviour
-            llm_config = {
+
+        def _cfg(max_tokens: int = 800):
+            if _llm_provider == "google":
+                from agents.stock_synthesis.gemini_ag2_client import (
+                    GeminiHTTPModelClient,
+                    build_llm_config,
+                )
+                # Side-effect: cache the class so we can register_model_client below
+                nonlocal _custom_client_cls
+                _custom_client_cls = GeminiHTTPModelClient
+                return build_llm_config(model=use_model, temperature=0.3, max_tokens=max_tokens)
+            if _llm_provider == "bedrock":
+                return {
+                    "config_list": [{
+                        "model": use_model,
+                        "aws_region": os.environ.get("BEDROCK_REGION", "ap-southeast-2"),
+                        "api_type": "bedrock",
+                    }],
+                    "temperature": 0.3,
+                }
+            return {
                 "config_list": [{
                     "model": use_model,
                     "api_key": os.environ.get("OPENAI_API_KEY", ""),
+                    "max_tokens": max_tokens,
                 }],
                 "temperature": 0.3,
             }
@@ -188,38 +202,42 @@ async def run_synthesis(
         bull = ConversableAgent(
             name="Bull_Analyst",
             system_message=BULL_ANALYST_PROMPT.format(past_lessons=bull_lessons),
-            llm_config=llm_config,
+            llm_config=_cfg(max_tokens=400),
             human_input_mode="NEVER",
         )
         bear = ConversableAgent(
             name="Bear_Analyst",
             system_message=BEAR_ANALYST_PROMPT.format(past_lessons=bear_lessons),
-            llm_config=llm_config,
+            llm_config=_cfg(max_tokens=400),
             human_input_mode="NEVER",
         )
         risk_mgr = ConversableAgent(
             name="Risk_Manager",
             system_message=RISK_MANAGER_PROMPT.format(past_lessons=risk_lessons),
-            llm_config=llm_config,
+            llm_config=_cfg(max_tokens=300),
             human_input_mode="NEVER",
         )
         portfolio_mgr = ConversableAgent(
             name="Portfolio_Manager",
             system_message=PORTFOLIO_MANAGER_PROMPT.format(past_lessons=pm_lessons),
-            llm_config=llm_config,
+            llm_config=_cfg(max_tokens=600),
             human_input_mode="NEVER",
         )
 
-        # Group chat with structured turn order
+        # Group chat with structured turn order.
+        # max_round = 4 agents × rounds + 1 (kickoff). With ROUNDS=1 that's 5.
+        # Hard-cap regardless of MAX_DEBATE_ROUNDS to prevent the "15 calls
+        # for 4 speakers" runaway observed before (AG2 GroupChatManager
+        # re-invites agents past the round boundary).
         groupchat = GroupChat(
             agents=[bull, bear, risk_mgr, portfolio_mgr],
             messages=[],
-            max_round=MAX_DEBATE_ROUNDS * 4 + 1,  # 4 agents × rounds + initial
+            max_round=MAX_DEBATE_ROUNDS * 4 + 1,
             speaker_selection_method="round_robin",
         )
         manager = GroupChatManager(
             groupchat=groupchat,
-            llm_config=llm_config,
+            llm_config=_cfg(max_tokens=200),  # manager rarely speaks, keep tiny
         )
 
         # Register the custom Gemini-over-HTTP client on every agent that has

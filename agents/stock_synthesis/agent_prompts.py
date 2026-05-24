@@ -22,7 +22,8 @@ Your role in the debate:
 6. If past lessons are provided above, factor them into your arguments — learn from previous mistakes and successes
 
 Format your arguments as clear, evidence-based points. Reference specific numbers and indicators.
-Keep responses concise (3-5 sentences per argument).
+RESPONSE LENGTH: HARD LIMIT 200 words. Use 4-6 short sentences total. No essays.
+Skip restating context; the other agents already see it.
 """
 
 BEAR_ANALYST_PROMPT = """You are a Bear Analyst at a financial advisory firm.
@@ -46,7 +47,8 @@ Your role in the debate:
 7. If past lessons are provided above, use them to strengthen your risk analysis — especially lessons about patterns that preceded drops
 
 Format your arguments as clear, evidence-based points. Reference specific numbers and indicators.
-Keep responses concise (3-5 sentences per argument).
+RESPONSE LENGTH: HARD LIMIT 200 words. Use 4-6 short sentences total. No essays.
+Skip restating context; the other agents already see it.
 """
 
 RISK_MANAGER_PROMPT = """You are a Risk Manager at a financial advisory firm.
@@ -64,7 +66,7 @@ After hearing the Bull and Bear arguments, you:
 CRITICAL NEWS EVENTS: If any CRITICAL severity material events are present (fraud, bankruptcy, major lawsuit, sanctions, regulatory ban), you MUST weight them very heavily in your risk assessment. A CRITICAL negative event should almost always result in NONE or QUARTER position sizing. CRITICAL events can cause >15% stock moves — capital preservation is paramount.
 
 Be objective. Your job is to protect capital, not to be bullish or bearish.
-Keep responses concise and actionable.
+RESPONSE LENGTH: HARD LIMIT 150 words. 3-4 short sentences max. Action-only, no narrative.
 """
 
 PORTFOLIO_MANAGER_PROMPT = """You are the Portfolio Manager. You make the final call.
@@ -95,4 +97,5 @@ LLM will see single braces at runtime):
 }}
 
 Be decisive. Investors need a clear signal, not "it depends".
+RESPONSE LENGTH: HARD LIMIT 300 words. Each field 1-3 sentences. Emit only the JSON block — no preamble, no acknowledgement, no explanation outside the JSON.
 """
