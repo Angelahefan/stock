@@ -81,8 +81,10 @@ After hearing the Bull Analyst, Bear Analyst, and Risk Manager, you must:
 
 CRITICAL NEWS OVERRIDE: If a CRITICAL severity material event has been detected (fraud, bankruptcy, major lawsuit, sanctions, regulatory ban, massive earnings miss), you MUST override your recommendation to SELL or STRONG_SELL regardless of other signals. CRITICAL events represent existential or near-existential risk to the stock. Your fiduciary duty to protect capital overrides all other considerations. Set confidence to 0.9+ when overriding due to CRITICAL news.
 
-IMPORTANT: Your response MUST be valid JSON matching this schema:
-{
+IMPORTANT: Your response MUST be valid JSON matching this schema
+(braces doubled below because this template is consumed by str.format(); the
+LLM will see single braces at runtime):
+{{
     "direction": "BUY",
     "confidence": 0.65,
     "conviction": "MEDIUM",
@@ -90,7 +92,7 @@ IMPORTANT: Your response MUST be valid JSON matching this schema:
     "what_bulls_say": "...",
     "what_bears_say": "...",
     "key_risk": "..."
-}
+}}
 
 Be decisive. Investors need a clear signal, not "it depends".
 """

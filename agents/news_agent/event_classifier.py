@@ -84,11 +84,16 @@ def classify_events(ticker: str, news_items: List[NewsItem]) -> List[MaterialEve
     )
 
     try:
-        from agents.llm_client import GeminiChatClient, RouterChatClient
+        # NOTE 2026-05-23: class was renamed GeminiChatClient -> GoogleChatClient
+        # in platform-be/agents/llm_client.py months ago; this importer was
+        # missed, throwing ImportError every news classification → all news
+        # silently fell back to "engine_unavailable" classification, depriving
+        # synthesis of news input → CRITICAL events couldn't suppress BUYs.
+        from agents.llm_client import GoogleChatClient, RouterChatClient
 
         # Prefer Gemini for news classification — better real-time knowledge
         try:
-            client = GeminiChatClient()
+            client = GoogleChatClient()
             response = client.chat(
                 messages=[
                     {"role": "system", "content": _CLASSIFIER_SYSTEM_PROMPT},

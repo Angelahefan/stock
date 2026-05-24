@@ -151,25 +151,21 @@ async def run_synthesis(
         risk_lessons = memory.format_lessons_for_prompt("risk_manager", situation, n_memories=2, n_best=2)
         pm_lessons = memory.format_lessons_for_prompt("portfolio_manager", situation, n_memories=2, n_best=2)
 
-        # Create agents with memory-injected prompts
-        # Build llm_config in AG2 v0.5+ config_list format so we can route to
-        # the same Gemini provider the chat endpoint + RouterChatClient already
-        # use, instead of AG2 silently falling back to OpenAI's default client
-        # (which needs OPENAI_API_KEY and would explain 2 months of "AG2 debate
-        # failed: ... — falling back" log lines).
-        #
-        # LLM_PRIMARY_PROVIDER drives the choice: google (default), openai,
-        # bedrock. The fallback path (RouterChatClient) follows the same env.
+        # Build llm_config. Gemini is the default — see gemini_ag2_client.py
+        # for why we use a custom ModelClient (AG2 0.5.3's native api_type=google
+        # requires google-generativeai>=0.3 which needs Python 3.9+, but EC2 is
+        # pinned to 3.8.20 → ancient SDK missing `Content` symbol → silent
+        # fallback for 2 months). The custom client wraps GoogleChatClient
+        # (pure HTTP — same path the chat bot uses successfully every day).
         _llm_provider = os.environ.get("LLM_PRIMARY_PROVIDER", "google").lower()
+        _custom_client_cls = None  # set when we need to register_model_client
         if _llm_provider == "google":
-            llm_config = {
-                "config_list": [{
-                    "model": use_model,
-                    "api_key": os.environ.get("GOOGLE_API_KEY", ""),
-                    "api_type": "google",
-                }],
-                "temperature": 0.3,
-            }
+            from agents.stock_synthesis.gemini_ag2_client import (
+                GeminiHTTPModelClient,
+                build_llm_config,
+            )
+            llm_config = build_llm_config(model=use_model, temperature=0.3)
+            _custom_client_cls = GeminiHTTPModelClient
         elif _llm_provider == "bedrock":
             llm_config = {
                 "config_list": [{
@@ -225,6 +221,20 @@ async def run_synthesis(
             groupchat=groupchat,
             llm_config=llm_config,
         )
+
+        # Register the custom Gemini-over-HTTP client on every agent that has
+        # an LLM. AG2 stores a placeholder until register_model_client is
+        # called with a class whose __name__ matches model_client_cls.
+        if _custom_client_cls is not None:
+            for _agent in (bull, bear, risk_mgr, portfolio_mgr, manager):
+                try:
+                    _agent.register_model_client(model_client_cls=_custom_client_cls)
+                except Exception as _reg_exc:
+                    logger.warning(
+                        "register_model_client failed on %s: %s",
+                        getattr(_agent, "name", _agent.__class__.__name__),
+                        str(_reg_exc)[:200],
+                    )
 
         # Kick off the debate
         # Build initial message with CRITICAL news alert if applicable
@@ -285,6 +295,37 @@ async def run_synthesis(
             ticker, exchange, context, signals_aligned, use_model
         )
 
+    # ── Post-debate Quality + Regime gates (backtest-proven, +~8% win rate) ──
+    # Applied to BUY/STRONG_BUY signals only. Demote to HOLD if:
+    #   1. quality_tier in {C, D}
+    #   2. NOT (is_profitable AND is_growing AND is_healthy)
+    #   3. Regime proxy: TA + FA both bearish
+    # Fail-open: missing quality row → gate is a no-op.
+    gate_notes: List[str] = []
+    if recommendation and recommendation.get("direction") in ("BUY", "STRONG_BUY"):
+        quality = await _get_quality_for_gate(ticker, exchange)
+        if quality:
+            qt = (quality.get("quality_tier") or "").upper()
+            if qt in ("C", "D"):
+                gate_notes.append(f"[Quality gate] Demoted BUY → HOLD (quality tier {qt})")
+                recommendation["direction"]  = "HOLD"
+                recommendation["confidence"] = max(0.3, float(recommendation.get("confidence", 0.5)) - 0.3)
+                recommendation["conviction"] = "LOW"
+            elif not (quality.get("is_profitable") and quality.get("is_growing") and quality.get("is_healthy")):
+                failing = [k for k in ("is_profitable", "is_growing", "is_healthy") if not quality.get(k)]
+                gate_notes.append(f"[Quality gate] Demoted BUY → HOLD (failed: {', '.join(failing)})")
+                recommendation["direction"]  = "HOLD"
+                recommendation["confidence"] = max(0.3, float(recommendation.get("confidence", 0.5)) - 0.2)
+                recommendation["conviction"] = "LOW"
+        if recommendation.get("direction") in ("BUY", "STRONG_BUY"):
+            if ta_dir == SignalDirection.SELL and fa_dir == SignalDirection.SELL:
+                gate_notes.append("[Regime gate] Demoted BUY → HOLD (TA + FA both SELL — bearish regime)")
+                recommendation["direction"]  = "HOLD"
+                recommendation["confidence"] = max(0.3, float(recommendation.get("confidence", 0.5)) - 0.2)
+                recommendation["conviction"] = "LOW"
+        if gate_notes:
+            logger.info("[%s/%s] post-debate gates fired: %s", ticker, exchange, " | ".join(gate_notes))
+
     # Build final result
     if recommendation:
         direction = SignalDirection(recommendation.get("direction", "HOLD"))
@@ -294,6 +335,10 @@ async def run_synthesis(
         what_bulls_say = recommendation.get("what_bulls_say", "")
         what_bears_say = recommendation.get("what_bears_say", "")
         key_risk = recommendation.get("key_risk", "")
+        # Surface gate-firing reason so the UI shows WHY the BUY was demoted.
+        if gate_notes:
+            gate_text = " ".join(gate_notes)
+            key_risk = (key_risk + " · " + gate_text) if key_risk else gate_text
     else:
         # Default to HOLD if debate produced no result
         direction = SignalDirection.HOLD
@@ -475,6 +520,35 @@ def _extract_json(text) -> Optional[dict]:
             return out
 
     return None
+
+
+async def _get_quality_for_gate(ticker: str, exchange: str) -> Optional[dict]:
+    """Single-shot read of quality fields from fundamental_lite used by the
+    post-debate Quality Gate. Returns None on failure so the gate becomes a
+    no-op (fail-open — never refuse to emit a signal because the quality
+    table is unreachable)."""
+    try:
+        from scripts.lib.db_helpers import get_conn
+        import psycopg2.extras
+        conn = get_conn()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT quality_tier, is_profitable, is_growing, is_healthy "
+                    "FROM datapai.fundamental_lite "
+                    "WHERE ticker = %s AND exchange = %s LIMIT 1",
+                    (ticker, exchange),
+                )
+                row = cur.fetchone()
+                return dict(row) if row else None
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except Exception as exc:
+        logger.debug("quality gate lookup failed for %s/%s: %s", ticker, exchange, str(exc)[:120])
+        return None
 
 
 async def _fallback_synthesis(
