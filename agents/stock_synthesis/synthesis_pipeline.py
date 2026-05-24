@@ -263,12 +263,19 @@ async def run_synthesis(
             max_turns=MAX_DEBATE_ROUNDS * 4,
         )
 
-        # Extract debate points from chat history
+        # Extract debate points from chat history.
+        # NOTE: AG2's GroupChat tags every message with role='user' (not
+        # 'assistant') because each agent's output is consumed by the next
+        # as user input. We previously filtered role=='assistant' → ZERO
+        # captures → bull_arguments/bear_arguments arrays always empty →
+        # Reflector starved. Filter on `name` instead (every speaker has it).
         for msg in groupchat.messages:
-            if msg.get("role") == "assistant" and msg.get("name"):
+            name = msg.get("name")
+            content = msg.get("content")
+            if name and content and isinstance(content, str) and content.strip():
                 debate_points.append(DebatePoint(
-                    agent=msg["name"],
-                    argument=msg["content"][:500],
+                    agent=name,
+                    argument=content[:500],
                 ))
 
         # Extract Portfolio Manager's final JSON recommendation
