@@ -65,6 +65,14 @@ async def save_synthesis(synthesis) -> bool:
 
         with get_conn() as conn:
             with conn.cursor() as cur:
+                # 2026-05-28: write transparency JSONB columns (migration 045).
+                # Fail-soft: getattr() with defaults so older StockSynthesis
+                # instances (without the new fields) still write successfully —
+                # gate_decisions / agent_signals / reflector_lessons just
+                # default to empty dicts.
+                gate_decisions    = getattr(synthesis, "gate_decisions", None) or {}
+                agent_signals     = getattr(synthesis, "agent_signals", None) or {}
+                reflector_lessons = getattr(synthesis, "reflector_lessons", None) or {}
                 cur.execute(
                     """INSERT INTO datapai.stock_synthesis
                        (ticker, exchange, direction, confidence, conviction,
@@ -72,13 +80,18 @@ async def save_synthesis(synthesis) -> bool:
                         ta_direction, fa_direction, ma_direction,
                         signals_aligned, disagreement_summary,
                         debate_points_json, debate_rounds,
-                        model_used, total_tokens, computed_at)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        model_used, total_tokens, computed_at,
+                        gate_decisions, agent_signals, reflector_lessons)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                               %s::jsonb, %s::jsonb, %s::jsonb)
                        ON CONFLICT (ticker, exchange, computed_at) DO UPDATE SET
                         direction = EXCLUDED.direction,
                         confidence = EXCLUDED.confidence,
                         conviction = EXCLUDED.conviction,
-                        thesis = EXCLUDED.thesis""",
+                        thesis = EXCLUDED.thesis,
+                        gate_decisions = EXCLUDED.gate_decisions,
+                        agent_signals = EXCLUDED.agent_signals,
+                        reflector_lessons = EXCLUDED.reflector_lessons""",
                     (
                         synthesis.ticker, synthesis.exchange,
                         synthesis.direction.value, synthesis.confidence, synthesis.conviction,
@@ -90,6 +103,9 @@ async def save_synthesis(synthesis) -> bool:
                         debate_json, synthesis.debate_rounds,
                         synthesis.model_used, synthesis.total_tokens,
                         synthesis.computed_at,
+                        json.dumps(gate_decisions),
+                        json.dumps(agent_signals),
+                        json.dumps(reflector_lessons),
                     ),
                 )
             conn.commit()

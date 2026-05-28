@@ -74,6 +74,24 @@ class StockSynthesis(BaseModel):
     debate_points: List[DebatePoint] = Field(default_factory=list)
     debate_rounds: int = Field(default=0, description="How many rounds of debate occurred")
 
+    # ── Structured transparency (2026-05-28, migration 045) ──────────────
+    # Drives the /ticker/[X]/intel "Behind the call" panel + /methodology page.
+    # All three are stored as JSONB; default {} so older callers don't break.
+    gate_decisions: dict = Field(
+        default_factory=dict,
+        description="Per-gate outcome: {quality_gate, regime_gate, sanity_override, critical_news} "
+                    "each with {fired:bool, reason, demoted_from, demoted_to}",
+    )
+    agent_signals: dict = Field(
+        default_factory=dict,
+        description="Per-input-agent contribution: technical/fundamental/macro/market_activity/news "
+                    "each with {direction, confidence, summary} + FA sub-agents",
+    )
+    reflector_lessons: dict = Field(
+        default_factory=dict,
+        description="Past lessons injected into agent prompts: {lessons_count, lessons:[...]}",
+    )
+
     # Metadata
     computed_at: datetime = Field(default_factory=datetime.utcnow)
     model_used: str = Field(default="gpt-4o-mini")

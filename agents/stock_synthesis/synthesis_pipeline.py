@@ -364,25 +364,57 @@ async def run_synthesis(
     #   2. NOT (is_profitable AND is_growing AND is_healthy)
     #   3. Regime proxy: TA + FA both bearish
     # Fail-open: missing quality row → gate is a no-op.
+    #
+    # 2026-05-28: also build structured `gate_decisions` dict for the
+    # "Behind the call" UI panel (migration 045 added the JSONB column).
     gate_notes: List[str] = []
+    gate_decisions: dict = {
+        "quality_gate":    {"fired": False},
+        "regime_gate":     {"fired": False},
+        "sanity_override": {"fired": False},  # populated lower down in sanity-check block
+        "critical_news":   {"fired": False},  # populated in CRITICAL news override block
+    }
     if recommendation and recommendation.get("direction") in ("BUY", "STRONG_BUY"):
+        original_direction = recommendation.get("direction")
         quality = await _get_quality_for_gate(ticker, exchange)
         if quality:
             qt = (quality.get("quality_tier") or "").upper()
             if qt in ("C", "D"):
                 gate_notes.append(f"[Quality gate] Demoted BUY → HOLD (quality tier {qt})")
+                gate_decisions["quality_gate"] = {
+                    "fired": True,
+                    "reason": f"quality_tier={qt}",
+                    "quality_tier": qt,
+                    "demoted_from": original_direction,
+                    "demoted_to": "HOLD",
+                }
                 recommendation["direction"]  = "HOLD"
                 recommendation["confidence"] = max(0.3, float(recommendation.get("confidence", 0.5)) - 0.3)
                 recommendation["conviction"] = "LOW"
             elif not (quality.get("is_profitable") and quality.get("is_growing") and quality.get("is_healthy")):
                 failing = [k for k in ("is_profitable", "is_growing", "is_healthy") if not quality.get(k)]
                 gate_notes.append(f"[Quality gate] Demoted BUY → HOLD (failed: {', '.join(failing)})")
+                gate_decisions["quality_gate"] = {
+                    "fired": True,
+                    "reason": f"failed_checks={','.join(failing)}",
+                    "failed_checks": failing,
+                    "demoted_from": original_direction,
+                    "demoted_to": "HOLD",
+                }
                 recommendation["direction"]  = "HOLD"
                 recommendation["confidence"] = max(0.3, float(recommendation.get("confidence", 0.5)) - 0.2)
                 recommendation["conviction"] = "LOW"
         if recommendation.get("direction") in ("BUY", "STRONG_BUY"):
             if ta_dir == SignalDirection.SELL and fa_dir == SignalDirection.SELL:
                 gate_notes.append("[Regime gate] Demoted BUY → HOLD (TA + FA both SELL — bearish regime)")
+                gate_decisions["regime_gate"] = {
+                    "fired": True,
+                    "reason": "TA+FA both SELL (bearish regime)",
+                    "ta_direction": ta_dir.value,
+                    "fa_direction": fa_dir.value,
+                    "demoted_from": original_direction,
+                    "demoted_to": "HOLD",
+                }
                 recommendation["direction"]  = "HOLD"
                 recommendation["confidence"] = max(0.3, float(recommendation.get("confidence", 0.5)) - 0.2)
                 recommendation["conviction"] = "LOW"
@@ -415,12 +447,14 @@ async def run_synthesis(
     # CRITICAL news event override: boost confidence and bias toward event direction
     if has_critical_news and news_signal:
         news_sentiment = news_signal.data.get("overall_sentiment", "NEUTRAL")
+        headline = news_signal.data.get("top_event_headline", "Unknown")
+        _pre_dir = direction
         if "NEGATIVE" in news_sentiment.upper():
             # Force SELL direction with high confidence
             if direction not in (SignalDirection.SELL, SignalDirection.STRONG_SELL):
                 direction = SignalDirection.SELL
                 thesis = (
-                    f"CRITICAL material event override: {news_signal.data.get('top_event_headline', 'Unknown')}. "
+                    f"CRITICAL material event override: {headline}. "
                     + thesis
                 )
             confidence = max(confidence, 0.85)
@@ -430,7 +464,16 @@ async def run_synthesis(
             if direction in (SignalDirection.HOLD, SignalDirection.BUY):
                 direction = SignalDirection.BUY
             confidence = max(confidence, 0.80)
-        key_risk = f"CRITICAL NEWS: {news_signal.data.get('top_event_headline', key_risk)}"
+        key_risk = f"CRITICAL NEWS: {headline}"
+        # Structured record for FE
+        gate_decisions["critical_news"] = {
+            "fired": True,
+            "sentiment": news_sentiment,
+            "headline": headline[:300],
+            "severity": news_signal.data.get("highest_severity", "UNKNOWN"),
+            "demoted_from": _pre_dir.value,
+            "demoted_to": direction.value,
+        }
 
     # Disagreement summary
     disagreement = None
@@ -449,6 +492,13 @@ async def run_synthesis(
     if _all_bearish and direction in (SignalDirection.BUY, SignalDirection.STRONG_BUY):
         logger.warning("[%s/%s] SANITY OVERRIDE: all signals bearish but LLM said %s → demoting to HOLD",
                        ticker, exchange, direction.value)
+        gate_decisions["sanity_override"] = {
+            "fired": True,
+            "reason": "all_input_signals_bearish_but_pm_said_buy",
+            "input_directions": [d.value for d in _input_dirs],
+            "demoted_from": direction.value,
+            "demoted_to": "HOLD",
+        }
         direction = SignalDirection.HOLD
         confidence = min(confidence, 0.4)
         conviction = "LOW"
@@ -456,6 +506,13 @@ async def run_synthesis(
     elif _all_bullish and direction in (SignalDirection.SELL, SignalDirection.STRONG_SELL):
         logger.warning("[%s/%s] SANITY OVERRIDE: all signals bullish but LLM said %s → demoting to HOLD",
                        ticker, exchange, direction.value)
+        gate_decisions["sanity_override"] = {
+            "fired": True,
+            "reason": "all_input_signals_bullish_but_pm_said_sell",
+            "input_directions": [d.value for d in _input_dirs],
+            "demoted_from": direction.value,
+            "demoted_to": "HOLD",
+        }
         direction = SignalDirection.HOLD
         confidence = min(confidence, 0.4)
         conviction = "LOW"
@@ -495,6 +552,46 @@ async def run_synthesis(
     except Exception as exc:
         logger.warning("Failed to log debate: %s", exc)
 
+    # ── Build structured agent_signals for the FE transparency panel ────────
+    # Each input agent (TA / FA / Macro / Market Activity / News) contributes
+    # a record: direction + confidence + summary + key data points.
+    agent_signals: dict = {}
+    for s in signals:
+        src = (s.source.value if hasattr(s.source, "value") else str(s.source)).lower()
+        agent_signals[src] = {
+            "direction": s.direction.value if hasattr(s.direction, "value") else str(s.direction),
+            "confidence": round(float(s.confidence), 3),
+            "summary": (s.summary or "")[:300],
+            "data": s.data if isinstance(s.data, dict) else {},
+        }
+
+    # Reflector lessons that fed into this debate (best-effort — depends on
+    # AgentMemoryStore.format_lessons_for_prompt having been called above).
+    reflector_lessons: dict = {}
+    try:
+        if "memory" in locals() and "situation" in locals():
+            # Pull a flat list of lessons across personas for display
+            all_lessons: list[str] = []
+            for role in ("bull", "bear", "risk_manager", "portfolio_manager"):
+                try:
+                    txt = memory.format_lessons_for_prompt(role, situation, n_memories=2, n_best=1)
+                    # format_lessons_for_prompt returns prose; pluck non-empty lines
+                    for line in (txt or "").splitlines():
+                        line = line.strip("- •*\t ")
+                        if line and len(line) > 25 and not line.startswith(("Past", "Lessons", "No prior")):
+                            all_lessons.append(f"[{role}] {line[:300]}")
+                except Exception:
+                    pass
+            # Dedup
+            seen = set(); uniq = []
+            for l in all_lessons:
+                if l not in seen:
+                    seen.add(l); uniq.append(l)
+            if uniq:
+                reflector_lessons = {"lessons_count": len(uniq), "lessons": uniq[:8]}
+    except Exception as exc:
+        logger.debug("reflector_lessons assembly failed: %s", exc)
+
     return StockSynthesis(
         ticker=ticker,
         exchange=exchange,
@@ -513,6 +610,10 @@ async def run_synthesis(
         disagreement_summary=disagreement,
         debate_points=debate_points,
         debate_rounds=MAX_DEBATE_ROUNDS,
+        # ── new structured transparency fields (migration 045) ──
+        gate_decisions=gate_decisions,
+        agent_signals=agent_signals,
+        reflector_lessons=reflector_lessons,
         model_used=use_model,
         total_tokens=total_tokens,
     )
