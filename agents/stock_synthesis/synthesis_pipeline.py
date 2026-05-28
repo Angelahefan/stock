@@ -20,7 +20,7 @@ import json
 import logging
 import os
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Tuple, Any
 
 from agents.stock_synthesis.agent_prompts import (
     BEAR_ANALYST_PROMPT,
@@ -552,6 +552,15 @@ async def run_synthesis(
     except Exception as exc:
         logger.warning("Failed to log debate: %s", exc)
 
+    # ── Snapshot the price the AI saw (migration 046) ──────────────────────
+    # Frozen here so the /debate page can never display a "wrong" price even
+    # if datapai.prices gets reloaded with corrections later. Single source
+    # of truth = the row we're about to write.
+    snap_price, snap_currency, snap_date = await _get_price_snapshot(ticker, exchange)
+    if snap_price is not None:
+        logger.info("[%s/%s] price snapshot: %s%.2f as of %s",
+                    ticker, exchange, snap_currency or "", snap_price, snap_date)
+
     # ── Build structured agent_signals for the FE transparency panel ────────
     # Each input agent (TA / FA / Macro / Market Activity / News) contributes
     # a record: direction + confidence + summary + key data points.
@@ -614,6 +623,10 @@ async def run_synthesis(
         gate_decisions=gate_decisions,
         agent_signals=agent_signals,
         reflector_lessons=reflector_lessons,
+        # ── price snapshot (migration 046) ──
+        price_at_debate=snap_price,
+        price_currency=snap_currency,
+        price_as_of_date=snap_date,
         model_used=use_model,
         total_tokens=total_tokens,
     )
@@ -732,6 +745,51 @@ def _is_complete_recommendation(rec: dict) -> bool:
         if len(val) < 20:
             return False
     return True
+
+
+async def _get_price_snapshot(ticker: str, exchange: str) -> Tuple[Optional[float], Optional[str], Optional[Any]]:
+    """
+    Return (close_price, currency, as_of_date) for the latest available
+    close in datapai.prices. Frozen at synthesis time so the /debate page
+    can always show "the price the AI agents saw" without re-querying.
+
+    Fails soft → (None, None, None) on any error.
+    """
+    # Currency hint by exchange (best-effort, no FX implied)
+    currency_map = {
+        "US": "USD", "ASX": "AUD", "HKEX": "HKD", "HOSE": "VND",
+        "SET": "THB", "KLSE": "MYR", "IDX": "IDR", "SGX": "SGD",
+        "TSE": "JPY", "TWSE": "TWD", "LSE": "GBP", "SSE": "CNY", "SZSE": "CNY",
+    }
+    currency = currency_map.get(exchange.upper())
+
+    # FE uses datapai.prices (the unified table) — match its lookup so the
+    # snapshot agrees with anything else that reads from the same source.
+    # Ticker may have an exchange suffix in some pipelines (BHP.AX, VIC.VN);
+    # we try the bare ticker first, then the suffixed form.
+    suffix_map = {"ASX": ".AX", "HOSE": ".VN", "HKEX": ".HK", "SET": ".BK",
+                  "KLSE": ".KL", "IDX": ".JK", "SSE": ".SS", "SZSE": ".SZ", "LSE": ".L"}
+    suffix = suffix_map.get(exchange.upper(), "")
+    candidates = [ticker]
+    if suffix and not ticker.endswith(suffix):
+        candidates.append(f"{ticker}{suffix}")
+
+    try:
+        from scripts.lib.db_helpers import get_conn
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                for cand in candidates:
+                    cur.execute(
+                        "SELECT close, trade_date FROM datapai.prices "
+                        "WHERE ticker = %s ORDER BY trade_date DESC LIMIT 1",
+                        (cand,),
+                    )
+                    row = cur.fetchone()
+                    if row and row[0] is not None:
+                        return float(row[0]), currency, row[1]
+    except Exception as exc:
+        logger.debug("price snapshot lookup failed for %s/%s: %s", ticker, exchange, str(exc)[:120])
+    return None, currency, None
 
 
 async def _get_quality_for_gate(ticker: str, exchange: str) -> Optional[dict]:

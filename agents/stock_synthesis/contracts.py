@@ -3,7 +3,7 @@ agents/stock_synthesis/contracts.py — Pydantic models for AG2 synthesis.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, date
 from enum import Enum
 from typing import List, Optional
 
@@ -90,6 +90,23 @@ class StockSynthesis(BaseModel):
     reflector_lessons: dict = Field(
         default_factory=dict,
         description="Past lessons injected into agent prompts: {lessons_count, lessons:[...]}",
+    )
+
+    # ── Price snapshot (2026-05-28, migration 046) ───────────────────────
+    # Frozen at write time so the /debate page always shows the EXACT price
+    # the AI agents saw when they made the call. Independent of any future
+    # price-table reloads, split adjustments, or source changes.
+    price_at_debate: Optional[float] = Field(
+        default=None,
+        description="Close price the AI saw at synthesis time. NULL = lookup unavailable.",
+    )
+    price_currency: Optional[str] = Field(
+        default=None,
+        description="Best-effort currency code (USD/AUD/HKD/VND/…). Inferred from exchange.",
+    )
+    price_as_of_date: Optional[date] = Field(
+        default=None,
+        description="Trade date of the price_at_debate close. Usually = computed_at.date().",
     )
 
     # Metadata

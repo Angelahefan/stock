@@ -65,14 +65,15 @@ async def save_synthesis(synthesis) -> bool:
 
         with get_conn() as conn:
             with conn.cursor() as cur:
-                # 2026-05-28: write transparency JSONB columns (migration 045).
-                # Fail-soft: getattr() with defaults so older StockSynthesis
-                # instances (without the new fields) still write successfully —
-                # gate_decisions / agent_signals / reflector_lessons just
-                # default to empty dicts.
+                # 2026-05-28: write transparency JSONB columns (migration 045)
+                # + price snapshot columns (migration 046). Fail-soft via
+                # getattr() so older StockSynthesis instances still write.
                 gate_decisions    = getattr(synthesis, "gate_decisions", None) or {}
                 agent_signals     = getattr(synthesis, "agent_signals", None) or {}
                 reflector_lessons = getattr(synthesis, "reflector_lessons", None) or {}
+                price_at_debate   = getattr(synthesis, "price_at_debate", None)
+                price_currency    = getattr(synthesis, "price_currency", None)
+                price_as_of_date  = getattr(synthesis, "price_as_of_date", None)
                 cur.execute(
                     """INSERT INTO datapai.stock_synthesis
                        (ticker, exchange, direction, confidence, conviction,
@@ -81,9 +82,10 @@ async def save_synthesis(synthesis) -> bool:
                         signals_aligned, disagreement_summary,
                         debate_points_json, debate_rounds,
                         model_used, total_tokens, computed_at,
-                        gate_decisions, agent_signals, reflector_lessons)
+                        gate_decisions, agent_signals, reflector_lessons,
+                        price_at_debate, price_currency, price_as_of_date)
                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                               %s::jsonb, %s::jsonb, %s::jsonb)
+                               %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s)
                        ON CONFLICT (ticker, exchange, computed_at) DO UPDATE SET
                         direction = EXCLUDED.direction,
                         confidence = EXCLUDED.confidence,
@@ -91,7 +93,10 @@ async def save_synthesis(synthesis) -> bool:
                         thesis = EXCLUDED.thesis,
                         gate_decisions = EXCLUDED.gate_decisions,
                         agent_signals = EXCLUDED.agent_signals,
-                        reflector_lessons = EXCLUDED.reflector_lessons""",
+                        reflector_lessons = EXCLUDED.reflector_lessons,
+                        price_at_debate = EXCLUDED.price_at_debate,
+                        price_currency = EXCLUDED.price_currency,
+                        price_as_of_date = EXCLUDED.price_as_of_date""",
                     (
                         synthesis.ticker, synthesis.exchange,
                         synthesis.direction.value, synthesis.confidence, synthesis.conviction,
@@ -106,6 +111,9 @@ async def save_synthesis(synthesis) -> bool:
                         json.dumps(gate_decisions),
                         json.dumps(agent_signals),
                         json.dumps(reflector_lessons),
+                        price_at_debate,
+                        price_currency,
+                        price_as_of_date,
                     ),
                 )
             conn.commit()
