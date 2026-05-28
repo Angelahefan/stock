@@ -510,10 +510,16 @@ async def run_synthesis(
     # said BUY/STRONG_BUY (or vice versa), that's a near-certain reasoning
     # error or JSON-parse artefact. Don't silently emit garbage; demote to
     # HOLD and stamp key_risk so downstream sees the override.
+    #
+    # 2026-05-28: WATCH + AVOID exempt from this check — both are *defensive*
+    # outcomes, so AVOID on all-bearish signals is the RIGHT call, not an
+    # impossible flip. WATCH likewise just defers; no contradiction.
     _input_dirs = [s.direction for s in signals]
     _all_bearish = all(d in (SignalDirection.SELL, SignalDirection.STRONG_SELL) for d in _input_dirs) and _input_dirs
     _all_bullish = all(d in (SignalDirection.BUY, SignalDirection.STRONG_BUY) for d in _input_dirs) and _input_dirs
-    if _all_bearish and direction in (SignalDirection.BUY, SignalDirection.STRONG_BUY):
+    if direction in (SignalDirection.WATCH, SignalDirection.AVOID):
+        pass  # both states are inherently consistent with any signal mix
+    elif _all_bearish and direction in (SignalDirection.BUY, SignalDirection.STRONG_BUY):
         logger.warning("[%s/%s] SANITY OVERRIDE: all signals bearish but LLM said %s → demoting to HOLD",
                        ticker, exchange, direction.value)
         gate_decisions["sanity_override"] = {
@@ -762,7 +768,10 @@ def _is_complete_recommendation(rec: dict) -> bool:
     if not isinstance(rec, dict):
         return False
     direction = (rec.get("direction") or "").upper().strip()
-    if direction not in ("STRONG_BUY", "BUY", "HOLD", "SELL", "STRONG_SELL"):
+    # 2026-05-28: WATCH + AVOID added to the valid set. Without them in this
+    # whitelist, any PM JSON emitting the new states gets rejected here and
+    # falls through to single-LLM fallback synthesis. Quiet but lethal bug.
+    if direction not in ("STRONG_BUY", "BUY", "HOLD", "WATCH", "AVOID", "SELL", "STRONG_SELL"):
         return False
     for narrative_field in ("thesis", "what_bulls_say", "what_bears_say", "key_risk"):
         val = (rec.get(narrative_field) or "").strip()
