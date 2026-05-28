@@ -139,12 +139,22 @@ class AgentMemoryStore:
     # ──────────────────────────────────────────────────────────────────────
 
     def get_memories(
-        self, agent_role: str, situation: str, n: int = 2
+        self,
+        agent_role: str,
+        situation: str,
+        n: int = 2,
+        prefer_horizons: Optional[List[str]] = None,
     ) -> List[dict]:
         """
         Retrieve top-N most similar past situations for an agent role.
 
-        Returns list of dicts: {situation, recommendation, relevance, ticker, outcome}
+        prefer_horizons : list of horizon tags like ['horizon:90d', 'horizon:30d']
+            If set, memories with one of these tags get scored 2× higher in BM25
+            ranking. Falls through to all memories if too few preferred match.
+            This is how we make Reflector's 30d/90d-trained lessons dominate
+            over noisier 7d-trained ones.
+
+        Returns list of dicts: {situation, recommendation, relevance, ticker, outcome, tags}
         """
         if not self._loaded:
             self.load()
@@ -160,6 +170,25 @@ class AgentMemoryStore:
         if len(scores) == 0:
             return []
 
+        # Boost preferred-horizon memories so they outrank cheaper 7d ones
+        if prefer_horizons:
+            pref_set = set(prefer_horizons)
+            boosted = []
+            for i, score in enumerate(scores):
+                m_tags = mems[i].get("tags") or []
+                if isinstance(m_tags, str):
+                    # Postgres ARRAY can come back as a string in some drivers
+                    try:
+                        import json as _json
+                        m_tags = _json.loads(m_tags)
+                    except Exception:
+                        m_tags = []
+                if any(t in pref_set for t in m_tags):
+                    boosted.append(score * 2.0)
+                else:
+                    boosted.append(score)
+            scores = boosted
+
         max_score = max(scores) if max(scores) > 0 else 1.0
         top_n = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:n]
 
@@ -174,6 +203,7 @@ class AgentMemoryStore:
                 "relevance": round(float(scores[i] / max_score), 3),
                 "ticker": m.get("ticker"),
                 "outcome": m.get("outcome"),
+                "tags": m.get("tags") or [],
             })
         return results
 
@@ -385,9 +415,17 @@ class AgentMemoryStore:
         actual_return_30d: Optional[float] = None,
         actual_return_90d: Optional[float] = None,
         was_correct: Optional[bool] = None,
+        was_correct_7d: Optional[bool] = None,
+        was_correct_30d: Optional[bool] = None,
+        was_correct_90d: Optional[bool] = None,
         lessons_extracted: Optional[List[str]] = None,
     ):
-        """Update a debate log with actual returns (called by reflection)."""
+        """Update a debate log with actual returns + per-horizon correctness.
+
+        Per-horizon columns (was_correct_7d / 30d / 90d) were added in
+        migration 047. Any of them can be None — COALESCE keeps the existing
+        value so calling this once per horizon is safe (idempotent).
+        """
         if not self._conn:
             return
 
@@ -397,14 +435,21 @@ class AgentMemoryStore:
             # write-side one (used for INSERT) doesn't expose `id`.
             cur.execute(
                 "UPDATE datapai.sys_agent_debate_log_full SET "
-                "actual_return_7d = COALESCE(%s, actual_return_7d), "
+                "actual_return_7d  = COALESCE(%s, actual_return_7d), "
                 "actual_return_30d = COALESCE(%s, actual_return_30d), "
                 "actual_return_90d = COALESCE(%s, actual_return_90d), "
-                "was_correct = COALESCE(%s, was_correct), "
+                "was_correct       = COALESCE(%s, was_correct), "
+                "was_correct_7d    = COALESCE(%s, was_correct_7d), "
+                "was_correct_30d   = COALESCE(%s, was_correct_30d), "
+                "was_correct_90d   = COALESCE(%s, was_correct_90d), "
                 "lessons_extracted = COALESCE(%s, lessons_extracted) "
                 "WHERE id = %s",
-                (actual_return_7d, actual_return_30d, actual_return_90d,
-                 was_correct, lessons_extracted, debate_id),
+                (
+                    actual_return_7d, actual_return_30d, actual_return_90d,
+                    was_correct,
+                    was_correct_7d, was_correct_30d, was_correct_90d,
+                    lessons_extracted, debate_id,
+                ),
             )
             cur.close()
         except Exception as exc:
@@ -467,13 +512,24 @@ class AgentMemoryStore:
         quality: Optional[str] = None,
         n_memories: int = 2,
         n_best: int = 2,
+        prefer_horizons: Optional[List[str]] = None,
     ) -> str:
         """
         Build a formatted lessons block ready to inject into an agent prompt.
 
         Combines curated best results (high priority) + BM25 similar memories.
         Returns empty string if no memories found.
+
+        prefer_horizons : list of horizon tags. Default ['horizon:90d',
+        'horizon:30d'] — these are the lessons trained on long-/medium-term
+        outcomes (higher signal-to-noise than 7d). Set to [] to disable.
         """
+        # Default: prefer the lessons trained on the more reliable horizons.
+        # 7d-trained lessons are noisier (random walk dominates) so they
+        # shouldn't outweigh 30d/90d ones unless nothing else is available.
+        if prefer_horizons is None:
+            prefer_horizons = ["horizon:90d", "horizon:30d"]
+
         parts = []
 
         # Layer 1: Curated best results
@@ -485,14 +541,23 @@ class AgentMemoryStore:
                 parts.append(f"- {b['title']}{sr}")
                 parts.append(f"  {b['lesson_text'][:300]}")
 
-        # Layer 2: Similar past situations
-        memories = self.get_memories(agent_role, situation, n=n_memories)
+        # Layer 2: Similar past situations — biased toward 30d/90d lessons
+        memories = self.get_memories(
+            agent_role, situation, n=n_memories, prefer_horizons=prefer_horizons,
+        )
         if memories:
             parts.append("\n=== PAST SIMILAR SITUATIONS ===")
             for m in memories:
                 outcome_tag = f" [outcome: {m['outcome']}]" if m.get("outcome") and m["outcome"] != "PENDING" else ""
+                # Surface horizon tag so the agent knows which timescale this lesson is from
+                m_tags = m.get("tags") or []
+                horizon_tag = next(
+                    (t.replace("horizon:", "") for t in m_tags if isinstance(t, str) and t.startswith("horizon:")),
+                    None,
+                )
+                horizon_str = f" [{horizon_tag}]" if horizon_tag else ""
                 parts.append(f"- Situation: {m['situation'][:200]}")
-                parts.append(f"  Lesson: {m['recommendation'][:300]}{outcome_tag}")
+                parts.append(f"  Lesson{horizon_str}: {m['recommendation'][:300]}{outcome_tag}")
 
         return "\n".join(parts) if parts else ""
 

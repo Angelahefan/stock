@@ -88,46 +88,70 @@ class Reflector:
             self._llm = RouterChatClient()
         return self._llm
 
+    # ── Horizon-specific thresholds (2026-05-28) ─────────────────────────
+    # 7d  is noisier — wider HOLD band, smaller "significant" cutoff
+    # 30d is medium-term — standard equity-research thresholds
+    # 90d is long-term — fundamentals dominate, larger HOLD band acceptable
+    _HORIZON_THRESHOLDS = {
+        7:  {"significant": 3.0,  "hold_band": 5.0},
+        30: {"significant": 5.0,  "hold_band": 10.0},
+        90: {"significant": 8.0,  "hold_band": 15.0},
+    }
+
+    def _evaluate_correctness_for_horizon(
+        self, direction: str, return_pct: Optional[float], horizon_days: int
+    ) -> str:
+        """Correctness for ONE horizon. Returns prose for the LLM prompt."""
+        if return_pct is None:
+            return f"N/A — {horizon_days}d return not yet available"
+        thr = self._HORIZON_THRESHOLDS.get(horizon_days, self._HORIZON_THRESHOLDS[30])
+        sig = thr["significant"]
+        band = thr["hold_band"]
+
+        buy = {"STRONG_BUY", "BUY"}
+        sell = {"STRONG_SELL", "SELL"}
+
+        if direction in buy:
+            if return_pct > sig:    return f"CORRECT — gained {return_pct:+.1f}% over {horizon_days}d"
+            if return_pct > 0:      return f"PARTIALLY CORRECT — modest gain {return_pct:+.1f}% over {horizon_days}d"
+            return f"WRONG — dropped {return_pct:+.1f}% over {horizon_days}d"
+        if direction in sell:
+            if return_pct < -sig:   return f"CORRECT — dropped {return_pct:+.1f}% over {horizon_days}d"
+            if return_pct < 0:      return f"PARTIALLY CORRECT — modest drop {return_pct:+.1f}% over {horizon_days}d"
+            return f"WRONG — gained {return_pct:+.1f}% over {horizon_days}d"
+        # HOLD
+        if abs(return_pct) < band:  return f"CORRECT — range-bound {return_pct:+.1f}% over {horizon_days}d"
+        return f"WRONG — moved {return_pct:+.1f}% over {horizon_days}d (should not have held)"
+
+    def _was_correct_bool_for_horizon(
+        self, direction: str, return_pct: Optional[float], horizon_days: int
+    ) -> Optional[bool]:
+        """Boolean for `was_correct_Nd` column. None if return not available."""
+        if return_pct is None:
+            return None
+        band = self._HORIZON_THRESHOLDS.get(horizon_days, self._HORIZON_THRESHOLDS[30])["hold_band"]
+        if direction in ("STRONG_BUY", "BUY"):
+            return return_pct > 0
+        if direction in ("STRONG_SELL", "SELL"):
+            return return_pct < 0
+        return abs(return_pct) < band
+
+    # ── Backward-compat wrappers (kept for callers using the old API) ────
     def _evaluate_correctness(self, direction: str, actual_returns: Dict[str, float]) -> str:
-        """Determine if the debate call was correct based on actual returns."""
-        ret_30d = actual_returns.get("30d", 0)
-        ret_90d = actual_returns.get("90d")
-
-        # Use 90d if available, else 30d
-        primary_return = ret_90d if ret_90d is not None else ret_30d
-
-        buy_directions = {"STRONG_BUY", "BUY"}
-        sell_directions = {"STRONG_SELL", "SELL"}
-
-        if direction in buy_directions:
-            if primary_return > 5:
-                return "CORRECT — stock gained significantly"
-            elif primary_return > 0:
-                return "PARTIALLY CORRECT — stock gained modestly"
-            else:
-                return f"WRONG — stock dropped {primary_return:+.1f}%"
-        elif direction in sell_directions:
-            if primary_return < -5:
-                return "CORRECT — stock dropped significantly"
-            elif primary_return < 0:
-                return "PARTIALLY CORRECT — stock dropped modestly"
-            else:
-                return f"WRONG — stock gained {primary_return:+.1f}%"
-        else:  # HOLD
-            if abs(primary_return) < 10:
-                return "CORRECT — stock stayed range-bound"
-            else:
-                return f"WRONG — stock moved {primary_return:+.1f}% (should not have held)"
+        """Legacy single-string correctness. Prefers 90d → 30d → 7d."""
+        for h in (90, 30, 7):
+            r = actual_returns.get(f"{h}d")
+            if r is not None:
+                return self._evaluate_correctness_for_horizon(direction, r, h)
+        return "N/A — no realised returns yet"
 
     def _was_correct_bool(self, direction: str, actual_returns: Dict[str, float]) -> bool:
-        """Simple boolean: did the direction align with the 30d return?"""
-        ret = actual_returns.get("30d", 0)
-        if direction in ("STRONG_BUY", "BUY"):
-            return ret > 0
-        elif direction in ("STRONG_SELL", "SELL"):
-            return ret < 0
-        else:
-            return abs(ret) < 10
+        """Legacy single-bool. Uses 30d if available, else 7d."""
+        for h in (30, 7):
+            r = actual_returns.get(f"{h}d")
+            if r is not None:
+                return bool(self._was_correct_bool_for_horizon(direction, r, h))
+        return False
 
     def _build_situation_text(self, debate: dict) -> str:
         """Build a situation description from a debate log row."""
@@ -168,6 +192,7 @@ class Reflector:
         self,
         debate_id: int,
         actual_returns: Dict[str, float],
+        horizon_days: Optional[int] = None,
     ) -> List[int]:
         """
         Reflect on a single debate and write lessons into memory.
@@ -178,6 +203,10 @@ class Reflector:
             ID from sys_agent_debate_log
         actual_returns : dict
             {"7d": float, "30d": float, "90d": float}
+        horizon_days : Optional[int]
+            7, 30, or 90 — which horizon to grade against and tag lessons
+            with. If None, falls back to legacy single-horizon behaviour
+            (prefers 90d → 30d → 7d).
 
         Returns
         -------
@@ -207,10 +236,20 @@ class Reflector:
         cur.close()
 
         direction = debate["direction"]
-        correctness = self._evaluate_correctness(direction, actual_returns)
-        was_correct = self._was_correct_bool(direction, actual_returns)
+
+        # Per-horizon evaluation — drives lesson content + correctness flag
+        if horizon_days in (7, 30, 90):
+            ret_for_horizon = actual_returns.get(f"{horizon_days}d")
+            correctness = self._evaluate_correctness_for_horizon(direction, ret_for_horizon, horizon_days)
+            was_correct = bool(self._was_correct_bool_for_horizon(direction, ret_for_horizon, horizon_days))
+        else:
+            # Legacy single-horizon — prefer 90d → 30d → 7d
+            correctness = self._evaluate_correctness(direction, actual_returns)
+            was_correct = self._was_correct_bool(direction, actual_returns)
         situation = self._build_situation_text(debate)
         tags = self._extract_tags(debate)
+        if horizon_days in (7, 30, 90):
+            tags.append(f"horizon:{horizon_days}d")
 
         # Map roles to their argument columns
         role_args = {
@@ -286,15 +325,27 @@ class Reflector:
                 memory_ids.append(mem_id)
             lessons.append(lesson.strip()[:200])
 
-        # Update debate log with actuals
-        self.memory.update_debate_actuals(
+        # Update debate log with actuals.
+        # When called per-horizon (the new Airflow path), write only the
+        # was_correct_{horizon}d column. The aggregated was_correct boolean
+        # is also updated for backward-compat with anything reading it.
+        update_kwargs = dict(
             debate_id=debate_id,
             actual_return_7d=actual_returns.get("7d"),
             actual_return_30d=actual_returns.get("30d"),
             actual_return_90d=actual_returns.get("90d"),
-            was_correct=was_correct,
             lessons_extracted=lessons,
         )
+        if horizon_days == 7:
+            update_kwargs["was_correct_7d"] = was_correct
+        elif horizon_days == 30:
+            update_kwargs["was_correct_30d"] = was_correct
+            update_kwargs["was_correct"] = was_correct  # 30d is the canonical legacy view
+        elif horizon_days == 90:
+            update_kwargs["was_correct_90d"] = was_correct
+        else:
+            update_kwargs["was_correct"] = was_correct  # legacy single-shot path
+        self.memory.update_debate_actuals(**update_kwargs)
 
         logger.info(
             "Reflected on debate #%d (%s/%s): %s, %d memories created",
@@ -302,25 +353,48 @@ class Reflector:
         )
         return memory_ids
 
-    async def reflect_pending(self, min_age_days: int = 7) -> int:
+    async def reflect_pending(
+        self,
+        horizon_days: int = 30,
+        min_age_days: Optional[int] = None,
+    ) -> int:
         """
-        Batch-process all un-evaluated debates older than min_age_days.
+        Batch-process debates that have reached the given horizon but haven't
+        been graded yet at that horizon.
 
-        Called by Airflow daily EOD task.
-        Returns total memories created.
+        Parameters
+        ----------
+        horizon_days : int (7 | 30 | 90)
+            Which horizon to grade against. Reflector should be called once
+            per horizon per day (separate DAG tasks).
+        min_age_days : Optional[int]
+            Defaults to horizon_days. Debates younger than this are skipped
+            because the realised return at that horizon doesn't exist yet.
+
+        Skips debates where was_correct_{horizon_days}d IS already set (so
+        running this daily is idempotent — only fresh-due rows are processed).
+
+        Returns total memories created in this run.
         """
         if not self.memory._conn:
             logger.warning("No DB connection — skipping batch reflection")
             return 0
 
+        if horizon_days not in (7, 30, 90):
+            raise ValueError(f"horizon_days must be 7, 30, or 90 (got {horizon_days})")
+
+        if min_age_days is None:
+            min_age_days = horizon_days
+
         cutoff = date.today() - timedelta(days=min_age_days)
+        column_filter = {7: "was_correct_7d", 30: "was_correct_30d", 90: "was_correct_90d"}[horizon_days]
 
         cur = self.memory._conn.cursor()
         cur.execute(
-            "SELECT id, ticker, exchange, debate_date, direction "
-            "FROM datapai.sys_agent_debate_log_full "
-            "WHERE was_correct IS NULL AND debate_date <= %s "
-            "ORDER BY debate_date",
+            f"SELECT id, ticker, exchange, debate_date, direction "
+            f"FROM datapai.sys_agent_debate_log_full "
+            f"WHERE {column_filter} IS NULL AND debate_date <= %s "
+            f"ORDER BY debate_date",
             (cutoff,),
         )
         pending = cur.fetchall()
@@ -328,25 +402,32 @@ class Reflector:
         cur.close()
 
         if not pending:
-            logger.info("No pending debates to reflect on")
+            logger.info("No pending debates at horizon=%dd (min_age=%dd)", horizon_days, min_age_days)
             return 0
 
-        logger.info("Found %d pending debates for reflection", len(pending))
+        logger.info("Reflector horizon=%dd: %d debates pending", horizon_days, len(pending))
         total_memories = 0
 
         for row in pending:
             debate = dict(zip(cols, row))
-            # Fetch actual returns from price data
             actual = await self._fetch_actual_returns(
                 debate["ticker"], debate["exchange"], debate["debate_date"]
             )
             if actual is None:
                 continue
+            ret = actual.get(f"{horizon_days}d")
+            if ret is None:
+                logger.debug("[%s/%s] %dd return still missing — skip",
+                             debate["ticker"], debate["exchange"], horizon_days)
+                continue
 
-            mem_ids = await self.reflect_on_debate(debate["id"], actual)
+            mem_ids = await self.reflect_on_debate(
+                debate["id"], actual, horizon_days=horizon_days
+            )
             total_memories += len(mem_ids)
 
-        logger.info("Batch reflection complete: %d memories from %d debates", total_memories, len(pending))
+        logger.info("Reflector horizon=%dd done: %d memories from %d debates",
+                    horizon_days, total_memories, len(pending))
         return total_memories
 
     async def _fetch_actual_returns(
