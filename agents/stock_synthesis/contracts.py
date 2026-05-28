@@ -11,10 +11,28 @@ from pydantic import BaseModel, Field
 
 
 class SignalDirection(str, Enum):
-    STRONG_BUY = "STRONG_BUY"
-    BUY = "BUY"
-    HOLD = "HOLD"
-    SELL = "SELL"
+    """
+    7-state direction enum (2026-05-28: added WATCH + AVOID).
+
+    Why the extra two states:
+      - HOLD historically meant "if you own it, keep it" — but for users
+        WITHOUT a position, HOLD reads as "don't buy", which is muddy.
+      - WATCH separates "we don't have conviction yet, monitor" from
+        "we're confident this should stay flat".
+      - AVOID separates "we see material risk — don't engage" from SELL
+        (which presupposes a position to exit).
+
+    Decision tree:
+      conf < 0.50 AND signals not aligned          → WATCH
+      CRITICAL negative news AND confidence < HIGH → AVOID
+      everything else                              → existing 5 states
+    """
+    STRONG_BUY  = "STRONG_BUY"
+    BUY         = "BUY"
+    WATCH       = "WATCH"        # NEW: active deferral — monitor, no action yet
+    HOLD        = "HOLD"         # if owned, keep it
+    AVOID       = "AVOID"        # NEW: material risk — don't engage regardless of position
+    SELL        = "SELL"
     STRONG_SELL = "STRONG_SELL"
 
 

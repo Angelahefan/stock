@@ -101,7 +101,19 @@ class Reflector:
     def _evaluate_correctness_for_horizon(
         self, direction: str, return_pct: Optional[float], horizon_days: int
     ) -> str:
-        """Correctness for ONE horizon. Returns prose for the LLM prompt."""
+        """Correctness for ONE horizon. Returns prose for the LLM prompt.
+
+        7 directions supported (2026-05-28: WATCH + AVOID added):
+          STRONG_BUY / BUY     → correct if stock rose
+          HOLD                 → correct if stock stayed within band
+          WATCH                → correct if NOT a big move (similar to HOLD;
+                                 we said "no conviction either way" — being
+                                 right means the deferral was warranted)
+          AVOID                → correct if stock flat or DROPPED
+                                 (we said "don't engage" — being right
+                                  means avoiding the position paid off)
+          SELL / STRONG_SELL   → correct if stock dropped
+        """
         if return_pct is None:
             return f"N/A — {horizon_days}d return not yet available"
         thr = self._HORIZON_THRESHOLDS.get(horizon_days, self._HORIZON_THRESHOLDS[30])
@@ -119,7 +131,20 @@ class Reflector:
             if return_pct < -sig:   return f"CORRECT — dropped {return_pct:+.1f}% over {horizon_days}d"
             if return_pct < 0:      return f"PARTIALLY CORRECT — modest drop {return_pct:+.1f}% over {horizon_days}d"
             return f"WRONG — gained {return_pct:+.1f}% over {horizon_days}d"
-        # HOLD
+        if direction == "AVOID":
+            # AVOID is "don't engage" — correct if you'd have saved yourself
+            # from a flat or down stock. Wrong if a big rally happened.
+            if return_pct <= sig:   return f"CORRECT — AVOID held: stock returned {return_pct:+.1f}% over {horizon_days}d"
+            return f"WRONG — AVOID missed: stock rallied {return_pct:+.1f}% over {horizon_days}d"
+        if direction == "WATCH":
+            # WATCH = "no conviction; monitor." Correct when nothing dramatic
+            # happens (stock stays range-bound). Wrong if the market provided
+            # a clear setup we should have caught.
+            if abs(return_pct) < band:
+                return f"CORRECT — WATCH held: stock range-bound {return_pct:+.1f}% over {horizon_days}d"
+            direction_word = "rallied" if return_pct > 0 else "dropped"
+            return f"WRONG — WATCH missed: stock {direction_word} {return_pct:+.1f}% (should have called {'BUY' if return_pct > 0 else 'SELL'})"
+        # HOLD (default branch)
         if abs(return_pct) < band:  return f"CORRECT — range-bound {return_pct:+.1f}% over {horizon_days}d"
         return f"WRONG — moved {return_pct:+.1f}% over {horizon_days}d (should not have held)"
 
@@ -129,11 +154,18 @@ class Reflector:
         """Boolean for `was_correct_Nd` column. None if return not available."""
         if return_pct is None:
             return None
-        band = self._HORIZON_THRESHOLDS.get(horizon_days, self._HORIZON_THRESHOLDS[30])["hold_band"]
+        thr  = self._HORIZON_THRESHOLDS.get(horizon_days, self._HORIZON_THRESHOLDS[30])
+        sig  = thr["significant"]
+        band = thr["hold_band"]
         if direction in ("STRONG_BUY", "BUY"):
             return return_pct > 0
         if direction in ("STRONG_SELL", "SELL"):
             return return_pct < 0
+        if direction == "AVOID":
+            return return_pct <= sig            # flat or down = AVOID was right
+        if direction == "WATCH":
+            return abs(return_pct) < band       # range-bound = deferral was warranted
+        # HOLD
         return abs(return_pct) < band
 
     # ── Backward-compat wrappers (kept for callers using the old API) ────

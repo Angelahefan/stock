@@ -444,15 +444,19 @@ async def run_synthesis(
         what_bears_say = ""
         key_risk = "Conflicting signals with no clear resolution"
 
-    # CRITICAL news event override: boost confidence and bias toward event direction
+    # CRITICAL news event override (2026-05-28: emits AVOID for non-position
+    # holders instead of SELL — semantically cleaner).
     if has_critical_news and news_signal:
         news_sentiment = news_signal.data.get("overall_sentiment", "NEUTRAL")
         headline = news_signal.data.get("top_event_headline", "Unknown")
         _pre_dir = direction
         if "NEGATIVE" in news_sentiment.upper():
-            # Force SELL direction with high confidence
+            # For non-holders, AVOID is the right call (you can't sell what
+            # you don't own). For users who likely DO hold (HIGH conviction
+            # BUY recently), STRONG_SELL is still appropriate — but until we
+            # have per-user position context, default to AVOID.
             if direction not in (SignalDirection.SELL, SignalDirection.STRONG_SELL):
-                direction = SignalDirection.SELL
+                direction = SignalDirection.AVOID
                 thesis = (
                     f"CRITICAL material event override: {headline}. "
                     + thesis
@@ -461,7 +465,7 @@ async def run_synthesis(
             conviction = "HIGH"
         elif "POSITIVE" in news_sentiment.upper():
             # Boost buy confidence
-            if direction in (SignalDirection.HOLD, SignalDirection.BUY):
+            if direction in (SignalDirection.HOLD, SignalDirection.WATCH, SignalDirection.BUY):
                 direction = SignalDirection.BUY
             confidence = max(confidence, 0.80)
         key_risk = f"CRITICAL NEWS: {headline}"
@@ -474,6 +478,26 @@ async def run_synthesis(
             "demoted_from": _pre_dir.value,
             "demoted_to": direction.value,
         }
+
+    # ── Low-confidence HOLD → WATCH demotion (2026-05-28) ──────────────
+    # HOLD has a specific meaning: "the signal IS to keep the current state."
+    # When PM emits HOLD with confidence < 0.5 AND signals not aligned, it's
+    # not actually a HOLD recommendation — it's "we don't have conviction
+    # either way." That's WATCH, not HOLD. The semantic distinction matters
+    # for the user: WATCH = "we'll tell you when conviction firms up";
+    # HOLD = "stay where you are, this is the action."
+    if direction == SignalDirection.HOLD and confidence < 0.50 and not signals_aligned:
+        logger.info("[%s/%s] low-conviction HOLD (conf=%.2f, signals not aligned) → WATCH",
+                    ticker, exchange, confidence)
+        gate_decisions["hold_to_watch"] = {
+            "fired": True,
+            "reason": f"confidence={confidence:.2f} < 0.50 AND signals not aligned",
+            "demoted_from": "HOLD",
+            "demoted_to": "WATCH",
+        }
+        direction = SignalDirection.WATCH
+        conviction = "LOW"
+        key_risk = key_risk or "Signals not yet clear — monitoring for a better setup."
 
     # Disagreement summary
     disagreement = None
