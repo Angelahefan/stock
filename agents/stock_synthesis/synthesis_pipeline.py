@@ -335,13 +335,28 @@ async def run_synthesis(
             )
             recommendation = None  # force fall-through below
 
-    except ImportError:
-        logger.warning("AG2/autogen not installed — falling back to single-LLM synthesis")
+    except ImportError as ie:
+        # 2026-05-28: promoted INFO→ERROR + include full exception repr.
+        # This is the exact log line that would have caught the original
+        # 2-month silent ImportError ("cannot import name 'Content' from
+        # 'google.ai.generativelanguage'") — the previous wording
+        # "AG2/autogen not installed" hid the real failure mode by
+        # implying the fallback was expected. It wasn't.
+        logger.error(
+            "[%s/%s] AG2 import path unavailable: %s — falling back to single-LLM. "
+            "If this fires for >20%% of tickers in a batch, INVESTIGATE.",
+            ticker, exchange, repr(ie),
+        )
         recommendation, debate_points = await _fallback_synthesis(
             ticker, exchange, context, signals_aligned, use_model
         )
     except Exception as exc:
-        logger.error("AG2 debate failed: %s — falling back", str(exc)[:200])
+        # Same hardening for non-ImportError failures (e.g. Gemini API down)
+        logger.error(
+            "[%s/%s] AG2 debate failed: %s — falling back to single-LLM. "
+            "If this fires for >20%% of tickers in a batch, INVESTIGATE.",
+            ticker, exchange, repr(exc)[:300],
+        )
         recommendation, debate_points = await _fallback_synthesis(
             ticker, exchange, context, signals_aligned, use_model
         )
