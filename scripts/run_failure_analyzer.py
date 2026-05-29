@@ -92,6 +92,13 @@ def _signature_for_row(row: dict, horizon_days: int) -> Dict[str, Any]:
     NOTE: conviction + signals_aligned + gate_decisions live on
     stock_synthesis, not sys_agent_debate_log. They're enriched from
     the synthesis-row join in main_async, then folded in here.
+
+    2026-05-28: `was_relabeled` added. After migration 049, ex-broken-
+    fallback rows carry direction=WATCH with relabeled_from_dir='HOLD'.
+    The "broken-fallback dominant cluster" is a KNOWN RESOLVED issue —
+    surfacing it in failure_patterns just creates noise. Keeping it
+    separate so the analyzer can either filter it out or label it
+    explicitly as the resolved pattern.
     """
     return {
         "horizon_days":    horizon_days,
@@ -102,6 +109,7 @@ def _signature_for_row(row: dict, horizon_days: int) -> Dict[str, Any]:
         "regime":          row.get("regime") or "NULL",
         "any_gate_fired":  _any_gate_fired(row.get("gate_decisions")),
         "signals_aligned": bool(row.get("signals_aligned")),
+        "was_relabeled":   bool(row.get("relabeled_from_dir")),
     }
 
 
@@ -199,6 +207,9 @@ async def main_async(horizon_days: int, min_cluster: int, min_loss_rate: float, 
             # NOTE: sys_agent_debate_log doesn't have conviction / signals_aligned /
             # gate_decisions columns — those live on stock_synthesis. We enrich
             # via a Python-side join below.
+            # NOTE: relabeled_from_dir (migration 049) is on the base table
+            # but not exposed via this FDW yet. The signature relies on
+            # direction='WATCH' as the post-relabel marker instead.
             cur.execute(
                 f"""
                 SELECT ticker, exchange, debate_date, direction,

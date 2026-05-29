@@ -494,6 +494,18 @@ async def run_synthesis(
             "demoted_to": direction.value,
         }
 
+    # ── AVOID always conviction=HIGH (2026-05-28) ──────────────────────
+    # AVOID is a protective call — material risk like fraud/bankruptcy/
+    # sanctions. There's no such thing as "low-conviction AVOID" semantically:
+    # if you can't tell whether to engage, that's WATCH. AVOID requires
+    # certainty that the risk is material. Force HIGH conviction so the UI
+    # doesn't show "AVOID with LOW conviction" — confusing to users.
+    if direction == SignalDirection.AVOID and conviction != "HIGH":
+        logger.info("[%s/%s] AVOID forced to HIGH conviction (was %s)",
+                    ticker, exchange, conviction)
+        conviction = "HIGH"
+        confidence = max(confidence, 0.85)
+
     # ── Low-confidence HOLD → WATCH demotion (2026-05-28) ──────────────
     # HOLD has a specific meaning: "the signal IS to keep the current state."
     # When PM emits HOLD with confidence < 0.5 AND signals not aligned, it's
@@ -884,13 +896,23 @@ async def _fallback_synthesis(
         from agents.llm_client import RouterChatClient
 
         client = RouterChatClient()
+        # 2026-05-28: 7-state vocabulary — WATCH for honest deferral (no
+        # conviction), AVOID for material risk (don't engage). Earlier
+        # 5-state prompt forced this fallback path to emit HOLD when the
+        # right call was actually WATCH or AVOID.
         prompt = (
             f"You are a senior portfolio manager. Analyze these signals for {ticker} ({exchange}) "
             f"and produce a unified recommendation.\n\n"
             f"{context}\n\n"
             f"Signals are {'ALIGNED' if signals_aligned else 'CONFLICTING'}.\n\n"
+            f"Pick direction from this 7-state set:\n"
+            f"  STRONG_BUY / BUY  — enter the position\n"
+            f"  HOLD              — keep current position (signal IS to stay put, with conviction)\n"
+            f"  WATCH             — no conviction yet; monitor + revisit (use when signals are mixed and confidence < 0.5)\n"
+            f"  AVOID             — material risk; don't engage (fraud/bankruptcy/sanctions/major-lawsuit)\n"
+            f"  SELL / STRONG_SELL — exit the position\n\n"
             f"Respond with ONLY valid JSON:\n"
-            f'{{"direction": "BUY|SELL|HOLD|STRONG_BUY|STRONG_SELL", '
+            f'{{"direction": "STRONG_BUY|BUY|HOLD|WATCH|AVOID|SELL|STRONG_SELL", '
             f'"confidence": 0.0-1.0, "conviction": "HIGH|MEDIUM|LOW", '
             f'"thesis": "...", "what_bulls_say": "...", '
             f'"what_bears_say": "...", "key_risk": "..."}}'

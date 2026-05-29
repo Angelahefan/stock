@@ -153,12 +153,26 @@ def _get_signal_changes(conn) -> list[dict]:
         old_dir = last_signals.get((ticker, exchange))
         new_dir = sig["direction"]
         # Signal changed (or first time seeing this ticker)
-        if old_dir is not None and old_dir != new_dir:
-            changes.append({
-                **sig,
-                "old_direction": old_dir,
-                "new_direction": new_dir,
-            })
+        if old_dir is None or old_dir == new_dir:
+            continue
+
+        # 2026-05-28: 7-state alerting policy
+        # ── Suppress WATCH↔HOLD transitions ─────────────────────────────
+        # Both are "no action needed" — flipping between them is semantic
+        # relabeling, not actionable news. Alerting on these would spam.
+        if {old_dir, new_dir} <= {"HOLD", "WATCH"}:
+            continue
+        # ── Always alert transitions to AVOID ───────────────────────────
+        # Material risk (fraud/bankruptcy/sanctions) — users MUST know,
+        # regardless of where they were before.
+        # (already covered by the generic "direction changed" branch, but
+        # explicit pass for clarity + future per-channel priority routing.)
+        changes.append({
+            **sig,
+            "old_direction": old_dir,
+            "new_direction": new_dir,
+            "urgent": (new_dir == "AVOID"),
+        })
 
     return changes
 
