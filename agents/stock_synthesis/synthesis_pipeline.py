@@ -450,14 +450,20 @@ async def run_synthesis(
             gate_text = " ".join(gate_notes)
             key_risk = (key_risk + " · " + gate_text) if key_risk else gate_text
     else:
-        # Default to HOLD if debate produced no result
-        direction = SignalDirection.HOLD
+        # Debate produced no result (LLM 429 / parse error / total failure).
+        # Emit WATCH (not HOLD) — "we don't have conviction yet" is the
+        # truthful state, and WATCH won't be promoted by the M1 momentum gate.
+        # 2026-06-09: replaced HOLD with WATCH after Gemini-credits-depleted
+        # caused 100% fallback for Jun 4-8 and M1 promoted those to BUY.
+        logger.error("[%s/%s] DEBATE FAILED — emitting WATCH (was: silent HOLD fallback)", ticker, exchange)
+        direction = SignalDirection.WATCH
         confidence = 0.3
         conviction = "LOW"
-        thesis = "Insufficient signal clarity for a directional call."
+        thesis = "AI debate unavailable — no recommendation can be made."
         what_bulls_say = ""
         what_bears_say = ""
-        key_risk = "Conflicting signals with no clear resolution"
+        key_risk = "Engine fallback fired; treat as deferred until next refresh."
+        gate_decisions["debate_failed"] = {"fired": True, "reason": "LLM returned no parseable recommendation"}
 
     # CRITICAL news event override (2026-05-28: emits AVOID for non-position
     # holders instead of SELL — semantically cleaner).
@@ -494,12 +500,27 @@ async def run_synthesis(
             "demoted_to": direction.value,
         }
 
-    # ── AVOID always conviction=HIGH (2026-05-28) ──────────────────────
-    # AVOID is a protective call — material risk like fraud/bankruptcy/
-    # sanctions. There's no such thing as "low-conviction AVOID" semantically:
-    # if you can't tell whether to engage, that's WATCH. AVOID requires
-    # certainty that the risk is material. Force HIGH conviction so the UI
-    # doesn't show "AVOID with LOW conviction" — confusing to users.
+    # ── AVOID guardrails (2026-05-28, refined 2026-05-29) ─────────────
+    # AVOID is reserved for CRITICAL material risk (fraud/bankruptcy/
+    # sanctions/regulatory-ban). If PM emits AVOID without a CRITICAL
+    # news event in the signal mix, that's mis-calibration — demote to
+    # STRONG_SELL (still bearish but doesn't poison the protective AVOID
+    # signal). NBIS-case fix: PE 1472 is overvaluation, not AVOID.
+    if direction == SignalDirection.AVOID and not has_critical_news:
+        logger.info(
+            "[%s/%s] AVOID without CRITICAL news → demoted to STRONG_SELL "
+            "(AVOID reserved for material risk like fraud/bankruptcy)",
+            ticker, exchange,
+        )
+        gate_decisions["avoid_demotion"] = {
+            "fired": True,
+            "reason": "AVOID emitted without CRITICAL news event",
+            "demoted_from": "AVOID",
+            "demoted_to": "STRONG_SELL",
+        }
+        direction = SignalDirection.STRONG_SELL
+
+    # Force HIGH conviction on AVOID — semantic invariant.
     if direction == SignalDirection.AVOID and conviction != "HIGH":
         logger.info("[%s/%s] AVOID forced to HIGH conviction (was %s)",
                     ticker, exchange, conviction)
@@ -513,18 +534,46 @@ async def run_synthesis(
     # either way." That's WATCH, not HOLD. The semantic distinction matters
     # for the user: WATCH = "we'll tell you when conviction firms up";
     # HOLD = "stay where you are, this is the action."
-    if direction == SignalDirection.HOLD and confidence < 0.50 and not signals_aligned:
-        logger.info("[%s/%s] low-conviction HOLD (conf=%.2f, signals not aligned) → WATCH",
-                    ticker, exchange, confidence)
-        gate_decisions["hold_to_watch"] = {
-            "fired": True,
-            "reason": f"confidence={confidence:.2f} < 0.50 AND signals not aligned",
-            "demoted_from": "HOLD",
-            "demoted_to": "WATCH",
-        }
-        direction = SignalDirection.WATCH
-        conviction = "LOW"
-        key_risk = key_risk or "Signals not yet clear — monitoring for a better setup."
+    #
+    # 2026-05-29 MOMENTUM EXCEPTION: if the stock is already moving > ±5%
+    # in the past 7 days, the market is telling us something. Deferring to
+    # WATCH at that point misses the move. TEAM/SNOW/GTLB postmortem: all
+    # 3 ran +20-45% while we WATCHed them because TA flipped to "overbought"
+    # → confidence dropped below 0.5. The momentum data was right there in
+    # the price table — we just didn't consult it.
+    if direction == SignalDirection.HOLD and confidence < 0.50 and not signals_aligned and not gate_decisions.get("debate_failed", {}).get("fired"):
+        recent_return_7d = await _get_recent_momentum(ticker, exchange)
+        if recent_return_7d is not None and abs(recent_return_7d) > 5.0:
+            logger.info(
+                "[%s/%s] HOLD NOT demoted to WATCH — 7d return %+.1f%% > ±5%% (momentum exception)",
+                ticker, exchange, recent_return_7d,
+            )
+            gate_decisions["momentum_override"] = {
+                "fired": True,
+                "reason": f"7d_return={recent_return_7d:+.1f}% > ±5%; stock already moving — don't defer",
+                "blocked_demotion": "HOLD → WATCH",
+            }
+            # Keep direction = HOLD. If both TA and FA agree positive direction
+            # AND momentum is positive, bump to BUY with modest confidence.
+            if (recent_return_7d > 5.0
+                and ta_dir in (SignalDirection.BUY, SignalDirection.STRONG_BUY)):
+                logger.info("[%s/%s] HOLD → BUY (positive momentum + TA bullish)", ticker, exchange)
+                direction = SignalDirection.BUY
+                confidence = max(confidence, 0.55)
+                conviction = "MEDIUM"
+                gate_decisions["momentum_override"]["promoted_to"] = "BUY"
+        else:
+            logger.info("[%s/%s] low-conviction HOLD (conf=%.2f, signals not aligned) → WATCH",
+                        ticker, exchange, confidence)
+            gate_decisions["hold_to_watch"] = {
+                "fired": True,
+                "reason": f"confidence={confidence:.2f} < 0.50 AND signals not aligned",
+                "demoted_from": "HOLD",
+                "demoted_to": "WATCH",
+            }
+            direction = SignalDirection.WATCH
+            conviction = "LOW"
+            key_risk = key_risk or "Signals not yet clear — monitoring for a better setup."
 
     # Disagreement summary
     disagreement = None
@@ -805,6 +854,49 @@ def _is_complete_recommendation(rec: dict) -> bool:
         if len(val) < 20:
             return False
     return True
+
+
+async def _get_recent_momentum(ticker: str, exchange: str) -> Optional[float]:
+    """Return the 7-day % return for the ticker, or None if unavailable.
+
+    Used by the momentum-exception in the HOLD→WATCH demotion logic.
+    If a stock is already moving >5% in a week, deferring is missing the
+    move — better to keep HOLD or even upgrade. The fix that came out of
+    the TEAM/SNOW/GTLB May-29 missed-rally postmortem.
+    """
+    suffix_map = {"ASX": ".AX", "HOSE": ".VN", "HKEX": ".HK", "SET": ".BK",
+                  "KLSE": ".KL", "IDX": ".JK", "SSE": ".SS", "SZSE": ".SZ", "LSE": ".L"}
+    suffix = suffix_map.get(exchange.upper(), "")
+    candidates = [ticker]
+    if suffix and not ticker.endswith(suffix):
+        candidates.append(f"{ticker}{suffix}")
+    try:
+        from scripts.lib.db_helpers import get_conn
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                for cand in candidates:
+                    cur.execute(
+                        """
+                        WITH p AS (
+                            SELECT close, trade_date::date AS d
+                            FROM datapai.prices
+                            WHERE ticker = %s
+                              AND trade_date::date >= CURRENT_DATE - INTERVAL '14 days'
+                            ORDER BY d DESC LIMIT 10
+                        )
+                        SELECT
+                          (MAX(close) FILTER (WHERE d = (SELECT MAX(d) FROM p))) /
+                          NULLIF((MAX(close) FILTER (WHERE d = (SELECT MIN(d) FROM p))), 0) - 1.0
+                        FROM p
+                        """,
+                        (cand,),
+                    )
+                    row = cur.fetchone()
+                    if row and row[0] is not None:
+                        return float(row[0]) * 100.0  # convert to %
+    except Exception as exc:
+        logger.debug("momentum lookup failed for %s/%s: %s", ticker, exchange, str(exc)[:120])
+    return None
 
 
 async def _get_price_snapshot(ticker: str, exchange: str) -> Tuple[Optional[float], Optional[str], Optional[Any]]:
