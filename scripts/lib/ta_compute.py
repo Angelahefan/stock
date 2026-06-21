@@ -199,6 +199,8 @@ def indicators_to_row(
         _g("ema_21"), _g("ema_30"), _g("ema_50"), _g("ema_200"),
         # Stochastic
         _g("stoch_k"),    _g("stoch_d"),     _g("stoch_label"),
+        # KDJ (9, 3, 3)
+        _g("kdj_k"),      _g("kdj_d"),       _g("kdj_j"),      _g("kdj_signal"),
         # ATR
         _g("atr"),        _g("atr_pct"),
         # ADX + DI

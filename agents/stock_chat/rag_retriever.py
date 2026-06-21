@@ -247,6 +247,40 @@ def get_ta_signal_context(ticker: str) -> str:
                 lines.append("")
                 lines.append(r["signal_md"][:1500])
 
+            # ── Weekly TA block (datapai.ta_indicators, timeframe='1w') ──────
+            # Populated by scripts/compute_ta_weekly.py for a limited universe.
+            # We surface it when present; absent rows are not an error.
+            try:
+                from .db import query as q3
+                wk = q3(
+                    """
+                    SELECT trade_date, rsi, rsi_label,
+                           macd_line, macd_signal, macd_hist, macd_label,
+                           kdj_k, kdj_d, kdj_j, kdj_signal
+                    FROM datapai.ta_indicators
+                    WHERE ticker = %s AND timeframe = '1w'
+                    ORDER BY ts DESC LIMIT 1
+                    """,
+                    (t,),
+                )
+                if wk:
+                    w = wk[0]
+                    lines.append("")
+                    lines.append(f"[Weekly TA — week ending {w['trade_date']}]")
+                    if w.get("rsi") is not None:
+                        lines.append(f"RSI(14) wk:  {w['rsi']:.1f} ({w.get('rsi_label', '')})")
+                    if w.get("macd_label"):
+                        lines.append(f"MACD wk:     {w['macd_label']}")
+                    if w.get("kdj_k") is not None:
+                        kdj_line = (
+                            f"KDJ(9,3,3) wk:  K={w['kdj_k']:.1f}  "
+                            f"D={(w.get('kdj_d') or 0):.1f}  "
+                            f"J={(w.get('kdj_j') or 0):.1f}  ({w.get('kdj_signal', '')})"
+                        )
+                        lines.append(kdj_line)
+            except Exception as wk_e:
+                logger.debug("weekly TA lookup failed for %s: %s", t, wk_e)
+
             logger.info("ta_signal: fell back to ta_signals+indicators_json for %s (OHLC: O=%s H=%s L=%s C=%s)",
                         t, open_p, high_p, low_p, close_p)
             return "\n".join(lines)

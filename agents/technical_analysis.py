@@ -167,6 +167,34 @@ def _safe_last(series: pd.Series) -> Optional[float]:
 # Additional pure-pandas indicator helpers
 # ---------------------------------------------------------------------------
 
+def _kdj(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    k_period: int = 9,
+    k_smoothing: int = 3,
+    d_smoothing: int = 3,
+) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    """KDJ (9, 3, 3) — Chinese-market standard short-term momentum oscillator.
+
+    RSV = 100 * (close - lowest_low_n) / (highest_high_n - lowest_low_n)
+    K_t = K_{t-1} * (1 - 1/k_smoothing) + RSV_t * (1/k_smoothing)
+    D_t = D_{t-1} * (1 - 1/d_smoothing) + K_t   * (1/d_smoothing)
+    J_t = 3 * K_t - 2 * D_t
+
+    Same math as scripts/compute_screener_metrics.compute_kdj() so the
+    chat-surfaced KDJ stays consistent with the screener-surfaced KDJ.
+    """
+    lowest_low   = low.rolling(k_period).min()
+    highest_high = high.rolling(k_period).max()
+    denom = (highest_high - lowest_low).replace(0, float("nan"))
+    rsv = 100 * (close - lowest_low) / denom
+    k = rsv.ewm(alpha=1.0 / k_smoothing, adjust=False).mean()
+    d = k.ewm(alpha=1.0 / d_smoothing, adjust=False).mean()
+    j = 3 * k - 2 * d
+    return k, d, j
+
+
 def _stochastic(
     high: pd.Series,
     low: pd.Series,
@@ -475,6 +503,20 @@ def calc_indicators(df: pd.DataFrame) -> Dict[str, Any]:
         "NEUTRAL"    if stoch_k is not None else None
     )
 
+    # ── KDJ (9, 3, 3) ─────────────────────────────────────────────────────────
+    if n >= 9:
+        k_s, d_s, j_s = _kdj(high, low, close)
+        kdj_k = _safe_last(k_s)
+        kdj_d = _safe_last(d_s)
+        kdj_j = _safe_last(j_s)
+    else:
+        kdj_k = kdj_d = kdj_j = None
+    kdj_signal = (
+        "OVERBOUGHT" if kdj_k is not None and kdj_k > 80 else
+        "OVERSOLD"   if kdj_k is not None and kdj_k < 20 else
+        "NEUTRAL"    if kdj_k is not None else None
+    )
+
     # ── ATR(14) ───────────────────────────────────────────────────────────────
     if n >= 15:
         atr_val = _safe_last(_atr(high, low, close))
@@ -591,6 +633,15 @@ def calc_indicators(df: pd.DataFrame) -> Dict[str, Any]:
         "stoch_k":          round(stoch_k, 2) if stoch_k is not None else None,
         "stoch_d":          round(stoch_d, 2) if stoch_d is not None else None,
         "stoch_label":      stoch_label,
+        # KDJ (9, 3, 3) — same OHLC, Chinese-market standard. J line is added.
+        "kdj_k":            round(kdj_k, 2) if kdj_k is not None else None,
+        "kdj_d":            round(kdj_d, 2) if kdj_d is not None else None,
+        "kdj_j":            round(kdj_j, 2) if kdj_j is not None else None,
+        "kdj_signal":       (
+            "OVERBOUGHT" if kdj_k is not None and kdj_k > 80 else
+            "OVERSOLD"   if kdj_k is not None and kdj_k < 20 else
+            "NEUTRAL"    if kdj_k is not None else None
+        ),
         # ── ATR(14) ───────────────────────────────────────────────────────────
         "atr":              round(atr_val, 4) if atr_val is not None else None,
         "atr_pct":          atr_pct,
